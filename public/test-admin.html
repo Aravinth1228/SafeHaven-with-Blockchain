@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard Test - SafeHaven</title>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1a1a2e;
+      color: #fff;
+    }
+    .card {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 30px;
+      margin: 20px 0;
+      border: 1px solid #0f3460;
+    }
+    h1 { color: #e94560; }
+    h2 { color: #0f3460; background: #e94560; padding: 10px; border-radius: 8px; display: inline-block; }
+    button {
+      background: #e94560;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      margin: 10px 5px;
+    }
+    button:hover { background: #ff6b6b; }
+    .success { background: #059669; padding: 15px; border-radius: 8px; margin: 20px 0; }
+    .error { background: #dc2626; padding: 15px; border-radius: 8px; margin: 20px 0; }
+    .info { background: #0f3460; padding: 15px; border-radius: 8px; margin: 20px 0; }
+    pre {
+      background: #0a0a15;
+      padding: 15px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 12px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 10px 0;
+    }
+    .status-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+    }
+    .status-dot.green { background: #059669; }
+    .status-dot.red { background: #dc2626; }
+    .status-dot.yellow { background: #f59e0b; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🧪 Admin Dashboard Test Page</h1>
+    
+    <div class="info">
+      <strong>📋 Test Steps:</strong>
+      <ol>
+        <li>Clear all data</li>
+        <li>Check backend connection</li>
+        <li>Check MongoDB connection</li>
+        <li>Set admin access</li>
+        <li>Go to admin dashboard</li>
+      </ol>
+    </div>
+
+    <button onclick="dropDatabase()">💣 Drop Database</button>
+    <button onclick="clearAll()">🧹 Clear All Data</button>
+    <button onclick="checkBackend()">🔌 Check Backend</button>
+    <button onclick="checkMongoDB()">📊 Check MongoDB</button>
+    <button onclick="setAdmin()">👤 Set as Admin</button>
+    <button onclick="goToAdmin()">📊 Go to Admin Dashboard</button>
+
+    <div id="results"></div>
+  </div>
+
+  <script>
+    const API_BASE = 'http://localhost:3000/api';
+
+    function log(message, type = 'info') {
+      const results = document.getElementById('results');
+      const div = document.createElement('div');
+      div.className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      div.innerHTML = message;
+      results.appendChild(div);
+    }
+
+    async function dropDatabase() {
+      document.getElementById('results').innerHTML = '';
+      log('💣 Dropping entire database...', 'info');
+      
+      try {
+        const response = await fetch(`${API_BASE}/drop-db`, { method: 'POST' });
+        const result = await response.json();
+        if (result.success) {
+          log(`✅ Database DROPPED! All collections deleted.`, 'success');
+          localStorage.clear();
+          log('✅ Browser storage cleared', 'success');
+        } else {
+          log(`❌ Drop failed: ${result.error}`, 'error');
+        }
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, 'error');
+      }
+    }
+
+    async function clearAll() {
+      document.getElementById('results').innerHTML = '';
+      log('🧹 Clearing all data...');
+      
+      // Clear localStorage
+      localStorage.clear();
+      sessionStorage.clear();
+      log('✅ Browser storage cleared');
+      
+      // Clear MongoDB
+      try {
+        const response = await fetch(`${API_BASE}/clear-db`, { method: 'POST' });
+        const result = await response.json();
+        if (result.success) {
+          log(`✅ MongoDB cleared: ${JSON.stringify(result.deleted)}`, 'success');
+        } else {
+          log(`❌ MongoDB clear failed: ${result.error}`, 'error');
+        }
+      } catch (error) {
+        log(`❌ Error clearing MongoDB: ${error.message}`, 'error');
+      }
+    }
+
+    async function checkBackend() {
+      log('🔌 Checking backend connection...');
+      try {
+        const response = await fetch(`${API_BASE}/health`);
+        const data = await response.json();
+        log(`✅ Backend is running!<br>Status: ${JSON.stringify(data)}`, 'success');
+      } catch (error) {
+        log(`❌ Backend not responding: ${error.message}<br>Make sure backend is running on port 3000`, 'error');
+      }
+    }
+
+    async function checkMongoDB() {
+      log('📊 Checking MongoDB connection...');
+      try {
+        const response = await fetch(`${API_BASE}/users`);
+        const data = await response.json();
+        if (data.success) {
+          log(`✅ MongoDB connected!<br>Users in database: ${data.data?.length || 0}`, 'success');
+        } else {
+          log(`❌ MongoDB error: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`❌ MongoDB connection failed: ${error.message}`, 'error');
+      }
+    }
+
+    function setAdmin() {
+      log('👤 Setting admin access...');
+      localStorage.setItem('isAdmin', 'true');
+      localStorage.setItem('adminWalletAddress', '0x548cb269df02005590CF48fb031dD697e52aa201');
+      log('✅ Admin access set! You can now go to admin dashboard', 'success');
+    }
+
+    function goToAdmin() {
+      log('📊 Redirecting to admin dashboard...');
+      window.location.href = '/admin';
+    }
+
+    // Auto-check on load
+    window.onload = () => {
+      log('🚀 Starting tests...<br>');
+      checkBackend();
+      checkMongoDB();
+    };
+  </script>
+</body>
+</html>

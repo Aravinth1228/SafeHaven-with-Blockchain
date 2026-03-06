@@ -1,0 +1,222 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 4%;
+    --foreground: 0 0% 98%;
+
+    --card: 240 10% 8%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 240 10% 8%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 330 100% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 25 100% 50%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 240 10% 15%;
+    --muted-foreground: 240 5% 65%;
+
+    --accent: 330 100% 50%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 240 10% 20%;
+    --input: 240 10% 15%;
+    --ring: 330 100% 50%;
+
+    --radius: 0.75rem;
+
+    /* Custom gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(330 100% 50%) 0%, hsl(25 100% 50%) 100%);
+    --gradient-primary-hover: linear-gradient(135deg, hsl(330 100% 60%) 0%, hsl(25 100% 60%) 100%);
+    --gradient-glow: 0 0 40px hsl(330 100% 50% / 0.4);
+    --gradient-card: linear-gradient(180deg, hsl(240 10% 12%) 0%, hsl(240 10% 8%) 100%);
+    
+    /* Status colors */
+    --status-safe: 142 76% 36%;
+    --status-alert: 38 92% 50%;
+    --status-danger: 0 84% 60%;
+
+    --sidebar-background: 240 10% 6%;
+    --sidebar-foreground: 0 0% 98%;
+    --sidebar-primary: 330 100% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 10% 15%;
+    --sidebar-accent-foreground: 0 0% 98%;
+    --sidebar-border: 240 10% 20%;
+    --sidebar-ring: 330 100% 50%;
+  }
+
+  .dark {
+    --background: 240 10% 4%;
+    --foreground: 0 0% 98%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Orbitron', sans-serif;
+  }
+}
+
+@layer components {
+  .gradient-text {
+    @apply bg-clip-text text-transparent;
+    background-image: var(--gradient-primary);
+  }
+
+  .gradient-border {
+    position: relative;
+    background: hsl(var(--card));
+    border-radius: var(--radius);
+  }
+
+  .gradient-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    background: var(--gradient-primary);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .glass-card {
+    @apply backdrop-blur-xl border border-border/50;
+    background: linear-gradient(180deg, hsl(240 10% 12% / 0.8) 0%, hsl(240 10% 8% / 0.9) 100%);
+  }
+
+  .glow-effect {
+    box-shadow: var(--gradient-glow);
+  }
+
+  .btn-gradient {
+    background: var(--gradient-primary);
+    @apply text-white font-semibold transition-all duration-300;
+  }
+
+  .btn-gradient:hover {
+    background: var(--gradient-primary-hover);
+    box-shadow: var(--gradient-glow);
+    transform: translateY(-2px);
+  }
+
+  .btn-outline-gradient {
+    position: relative;
+    background: transparent;
+    @apply text-foreground font-semibold transition-all duration-300;
+  }
+
+  .btn-outline-gradient::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 2px;
+    border-radius: inherit;
+    background: var(--gradient-primary);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .btn-outline-gradient:hover {
+    background: var(--gradient-primary);
+    @apply text-white;
+    box-shadow: var(--gradient-glow);
+  }
+
+  .status-safe {
+    @apply bg-green-500/20 text-green-400 border-green-500/50;
+  }
+
+  .status-alert {
+    @apply bg-yellow-500/20 text-yellow-400 border-yellow-500/50;
+  }
+
+  .status-danger {
+    @apply bg-red-500/20 text-red-400 border-red-500/50;
+  }
+
+  .emergency-btn {
+    @apply bg-red-600 hover:bg-red-500 text-white font-bold;
+    animation: pulse-emergency 2s infinite;
+  }
+
+  @keyframes pulse-emergency {
+    0%, 100% {
+      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    }
+    50% {
+      box-shadow: 0 0 0 15px rgba(239, 68, 68, 0);
+    }
+  }
+
+  .feature-card {
+    @apply p-6 rounded-xl transition-all duration-300;
+    background: linear-gradient(180deg, hsl(240 10% 12%) 0%, hsl(240 10% 8%) 100%);
+    border: 1px solid hsl(330 100% 50% / 0.2);
+  }
+
+  .feature-card:hover {
+    border-color: hsl(330 100% 50% / 0.5);
+    transform: translateY(-4px);
+    box-shadow: 0 20px 40px -20px hsl(330 100% 50% / 0.3);
+  }
+
+  .nav-link {
+    @apply relative px-4 py-2 text-muted-foreground hover:text-foreground transition-colors duration-300;
+  }
+
+  .nav-link.active {
+    @apply text-foreground;
+  }
+
+  .nav-link.active::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 50%;
+    height: 2px;
+    background: var(--gradient-primary);
+    border-radius: 2px;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

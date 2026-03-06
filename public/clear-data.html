@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clear LocalStorage - SafeHaven</title>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1a1a2e;
+      color: #fff;
+    }
+    .card {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 30px;
+      margin: 20px 0;
+      border: 1px solid #0f3460;
+    }
+    h1 {
+      color: #e94560;
+    }
+    button {
+      background: #e94560;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      margin: 10px 5px;
+    }
+    button:hover {
+      background: #ff6b6b;
+    }
+    .success {
+      background: #059669;
+      color: white;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 20px 0;
+      display: none;
+    }
+    .info {
+      background: #0f3460;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 20px 0;
+      font-size: 14px;
+    }
+    pre {
+      background: #0a0a15;
+      padding: 15px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🧹 SafeHaven Data Cleaner</h1>
+    
+    <div class="info">
+      <strong>⚠️ This will clear:</strong>
+      <ul>
+        <li>localStorage (users, currentUser, adminWalletAddress)</li>
+        <li>sessionStorage</li>
+        <li>All SafeHaven cached data</li>
+      </ul>
+    </div>
+
+    <button onclick="clearStorage()">Clear All Data</button>
+    <button onclick="clearMongoDB()" style="background: #dc2626;">Clear MongoDB Too</button>
+    
+    <div id="success" class="success">
+      ✅ Data cleared successfully! Refresh the page.
+    </div>
+
+    <div class="info">
+      <strong>📊 Current Storage:</strong>
+      <pre id="storageData"></pre>
+    </div>
+  </div>
+
+  <script>
+    // Show current storage
+    function showStorage() {
+      const data = {
+        localStorage: {},
+        sessionStorage: {}
+      };
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        data.localStorage[key] = localStorage.getItem(key);
+      }
+      
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        data.sessionStorage[key] = sessionStorage.getItem(key);
+      }
+      
+      document.getElementById('storageData').textContent = JSON.stringify(data, null, 2);
+    }
+    
+    function clearStorage() {
+      localStorage.clear();
+      sessionStorage.clear();
+      
+      document.getElementById('success').style.display = 'block';
+      document.getElementById('success').textContent = '✅ Browser storage cleared! Refresh the page.';
+      
+      showStorage();
+      
+      setTimeout(() => {
+        window.location.href = '/signup';
+      }, 2000);
+    }
+    
+    async function clearMongoDB() {
+      try {
+        const response = await fetch('http://localhost:3000/api/clear-db', {
+          method: 'POST'
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+          document.getElementById('success').style.display = 'block';
+          document.getElementById('success').textContent = '✅ MongoDB cleared! Refresh the page.';
+        } else {
+          alert('Failed to clear MongoDB: ' + result.error);
+        }
+      } catch (error) {
+        alert('Error connecting to backend. Make sure server is running.');
+        console.error(error);
+      }
+    }
+    
+    // Show storage on load
+    showStorage();
+  </script>
+</body>
+</html>

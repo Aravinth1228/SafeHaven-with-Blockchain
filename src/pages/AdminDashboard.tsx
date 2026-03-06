@@ -1,0 +1,1063 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+  Users,
+  MapPin,
+  AlertTriangle,
+  Shield,
+  Bell,
+  CheckCircle,
+  Clock,
+  Plus,
+  Trash2,
+  LogOut,
+  Wallet,
+  Loader2,
+  RefreshCw,
+  Database,
+  Send,
+  MessageSquare,
+  X
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { useAuth } from '@/contexts/AuthContext';
+import { useWallet } from '@/contexts/WalletContext';
+import { useToast } from '@/hooks/use-toast';
+import LeafletMap from '@/components/LeafletMap';
+import { useRealtimeAlerts } from '@/hooks/useRealtimeAlerts';
+import { useRealtimeLocations } from '@/hooks/useRealtimeLocations';
+import { useRealtimeProfiles } from '@/hooks/useRealtimeProfiles';
+import { api } from '@/lib/api';
+
+interface Profile {
+  id?: string;
+  user_id: string;
+  tourist_id: string;
+  username: string;
+  email?: string | null;
+  phone?: string | null;
+  dob?: string | null;
+  wallet_address?: string | null;
+  status: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface Alert {
+  id: string;
+  user_id: string;
+  tourist_id: string;
+  username: string | null;
+  status: string | null;
+  lat?: number | null;
+  lng?: number | null;
+  zone_name?: string | null;
+  zone_level?: string | null;
+  alert_type?: string | null;
+  dismissed: boolean;
+  created_at?: string | null;
+}
+
+interface DangerZone {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  radius: number;
+  level: string | null;
+  created_at?: string;
+}
+
+interface UserLocation {
+  id?: string;
+  user_id: string;
+  tourist_id: string;
+  lat: number;
+  lng: number;
+  status?: string;
+  updated_at?: string;
+}
+
+// Helper to parse UTC timestamps
+const parseUTC = (ts: string): Date => {
+  if (!ts) return new Date();
+  const normalized = /Z$|[+-]\d{2}:\d{2}$/.test(ts) ? ts : ts + 'Z';
+  return new Date(normalized);
+};
+
+const AdminDashboard: React.FC = () => {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const { adminLogout } = useAuth();
+  const { disconnectWallet, walletAddress } = useWallet();
+
+  // API Data State
+  const [users, setUsers] = useState<Profile[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [dangerZones, setDangerZones] = useState<DangerZone[]>([]);
+  const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
+
+  // UI State
+  const [isLoading, setIsLoading] = useState(true);
+  const [newZone, setNewZone] = useState({ name: '', lat: '', lng: '', radius: '', level: 'Medium' as 'Low' | 'Medium' | 'High' | 'Critical' });
+  const [showAddZone, setShowAddZone] = useState(false);
+
+  // Notification state
+  const [notifyTarget, setNotifyTarget] = useState<Profile | null>(null);
+  const [notifyMessage, setNotifyMessage] = useState('');
+  const [notifyType, setNotifyType] = useState<'info' | 'warning' | 'danger' | 'evacuation'>('warning');
+  const [isSendingNotification, setIsSendingNotification] = useState(false);
+
+  // Load data from Node.js backend
+  const loadData = useCallback(async () => {
+    try {
+      console.log('🔄 Loading admin dashboard data...');
+
+      const [usersData, alertsData, zonesData] = await Promise.all([
+        api.users.getAll(),
+        api.alerts.getActive(),
+        api.blockchainDangerZones.getAll(), // Use blockchain danger zones instead of MongoDB
+      ]);
+
+      console.log('📊 Data loaded:', {
+        users: usersData?.data?.length || 0,
+        alerts: alertsData?.data?.length || 0,
+        zones: zonesData?.data?.length || 0,
+      });
+
+      setUsers(usersData?.data || []);
+      setAlerts(alertsData?.data || []);
+      setDangerZones(zonesData?.data || []);
+    } catch (error) {
+      console.error('❌ Error loading data:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load dashboard data. Make sure backend is running.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [toast]);
+
+  // Realtime alerts subscription (polling)
+  useRealtimeAlerts({
+    onNewAlert: (newAlert) => {
+      setAlerts(prev => [newAlert, ...prev.filter(a => a.id !== newAlert.id)]);
+    },
+    onAlertDismissed: (dismissedAlert) => {
+      setAlerts(prev => prev.filter(a => a.id !== dismissedAlert.id));
+    },
+    enabled: true,
+  });
+
+  // Realtime locations subscription (polling)
+  useRealtimeLocations({
+    onLocationsLoaded: (locations) => {
+      console.log('📍 Locations loaded:', locations.length);
+      setUserLocations(locations);
+    },
+    onLocationUpdate: (location) => {
+      console.log('📍 Location update:', location.tourist_id, location.lat, location.lng);
+      setUserLocations(prev => {
+        const existingIndex = prev.findIndex(l => l.user_id === location.user_id || l.tourist_id === location.tourist_id);
+        if (existingIndex >= 0) {
+          const updated = [...prev];
+          updated[existingIndex] = location;
+          return updated;
+        }
+        return [...prev, location];
+      });
+    },
+    enabled: true,
+  });
+
+  // Realtime profiles subscription (polling)
+  useRealtimeProfiles({
+    onNewProfile: (profile) => {
+      setUsers(prev => [profile, ...prev.filter(u => u.user_id !== profile.user_id)]);
+      toast({
+        title: '👤 New Tourist Registered!',
+        description: `${profile.username} (${profile.tourist_id}) has registered.`,
+      });
+    },
+    onProfileUpdated: (profile) => {
+      setUsers(prev => {
+        const updated = prev.map(u => 
+          u.tourist_id === profile.tourist_id ? { ...u, status: profile.status, updated_at: profile.updated_at } : u
+        );
+        return updated;
+      });
+      
+      if (profile.status === 'safe') {
+        toast({
+          title: '✅ User Status Updated',
+          description: `${profile.username} is now SAFE`,
+        });
+      } else if (profile.status === 'alert') {
+        toast({
+          title: '⚠️ User Status Updated',
+          description: `${profile.username} requested ALERT`,
+          variant: 'default',
+        });
+      } else if (profile.status === 'danger') {
+        toast({
+          title: '🚨 User Status Updated',
+          description: `${profile.username} is in DANGER!`,
+          variant: 'destructive',
+        });
+      }
+    },
+    enabled: true,
+  });
+
+  // Check admin auth and load data
+  useEffect(() => {
+    const checkAdminAuth = async () => {
+      const isAdmin = localStorage.getItem('isAdmin');
+      if (isAdmin !== 'true') {
+        navigate('/admin-login');
+        return;
+      }
+      await loadData();
+    };
+    
+    checkAdminAuth();
+  }, [navigate, loadData]);
+
+  const handleLogout = () => {
+    adminLogout();
+    disconnectWallet();
+    toast({
+      title: 'Logged Out',
+      description: 'You have been logged out successfully.',
+    });
+    navigate('/admin-login');
+  };
+
+  const dismissAlert = async (alertId: string) => {
+    if (!alertId) {
+      toast({
+        title: 'Error',
+        description: 'Invalid alert ID.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      await api.alerts.dismiss(alertId);
+      setAlerts(prev => prev.filter(a => a.id !== alertId));
+      toast({
+        title: 'Alert Dismissed',
+        description: 'The alert has been dismissed.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to dismiss alert.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const addDangerZone = async () => {
+    if (!newZone.name || !newZone.lat || !newZone.lng || !newZone.radius) {
+      toast({
+        title: 'Missing Fields',
+        description: 'Please fill in all fields.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      // Create danger zone on blockchain instead of MongoDB
+      const { data } = await api.blockchainDangerZones.create({
+        name: newZone.name,
+        lat: parseFloat(newZone.lat),
+        lng: parseFloat(newZone.lng),
+        radius: parseFloat(newZone.radius),
+        level: newZone.level,
+        created_by: walletAddress || 'admin',
+      });
+
+      if (data) {
+        setDangerZones(prev => [data, ...prev]);
+      }
+
+      setNewZone({ name: '', lat: '', lng: '', radius: '', level: 'Medium' });
+      setShowAddZone(false);
+
+      toast({
+        title: 'Danger Zone Added to Blockchain',
+        description: `${newZone.name} has been stored on the blockchain.`,
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to add danger zone to blockchain.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const removeDangerZone = async (id: string) => {
+    if (!id) {
+      toast({
+        title: 'Error',
+        description: 'Invalid zone ID.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    try {
+      // Extract blockchain index from id (format: "zone-{index}" or use blockchainIndex)
+      const zone = dangerZones.find(z => z.id === id);
+      const blockchainIndex = (zone as any)?.blockchainIndex;
+      
+      if (blockchainIndex === undefined) {
+        toast({
+          title: 'Error',
+          description: 'Cannot remove MongoDB zones. Please use blockchain zones only.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      await api.blockchainDangerZones.delete(blockchainIndex, walletAddress || 'admin');
+      setDangerZones(prev => prev.filter(z => z.id !== id));
+
+      toast({
+        title: 'Zone Removed from Blockchain',
+        description: 'Danger zone has been removed from blockchain.',
+      });
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to remove danger zone.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const sendNotification = async () => {
+    if (!notifyTarget || !notifyMessage.trim()) return;
+
+    setIsSendingNotification(true);
+    try {
+      await api.notifications.send({
+        tourist_id: notifyTarget.tourist_id,
+        user_id: notifyTarget.user_id,
+        admin_wallet: walletAddress || 'admin',
+        message: notifyMessage.trim(),
+        notification_type: notifyType,
+      });
+
+      toast({
+        title: 'Notification Sent',
+        description: `Alert sent to ${notifyTarget.username}.`,
+      });
+
+      setNotifyTarget(null);
+      setNotifyMessage('');
+      setNotifyType('warning');
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: 'Failed to send notification.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsSendingNotification(false);
+    }
+  };
+
+  // Registered tourists
+  const displayUsers = users.length > 0 ? users : Object.values(
+    alerts.reduce((acc, a) => {
+      const existing = acc[a.tourist_id];
+      const isNewer = !existing || new Date(a.created_at ?? 0) > new Date(existing.created_at ?? 0);
+      if (isNewer) {
+        acc[a.tourist_id] = {
+          id: a.tourist_id,
+          user_id: a.user_id,
+          tourist_id: a.tourist_id,
+          username: a.username ?? 'Unknown',
+          email: null,
+          phone: null,
+          dob: null,
+          wallet_address: null,
+          status: a.status ?? 'safe',
+          created_at: a.created_at,
+        } as Profile;
+      }
+      return acc;
+    }, {} as Record<string, Profile>)
+  );
+
+  // Format locations for map
+  const mapLocations = (() => {
+    const merged: Record<string, { touristId: string; username: string; lat: number; lng: number; status: 'safe' | 'alert' | 'danger' }> = {};
+
+    for (const loc of userLocations) {
+      const profile = displayUsers.find(u => u.tourist_id === loc.tourist_id);
+      const statusFromProfile = profile?.status as 'safe' | 'alert' | 'danger';
+      merged[loc.tourist_id] = {
+        touristId: loc.tourist_id,
+        username: profile?.username || loc.tourist_id,
+        lat: loc.lat,
+        lng: loc.lng,
+        status: statusFromProfile || (loc.status || 'safe') as 'safe' | 'alert' | 'danger',
+      };
+    }
+
+    const latestAlertPerTourist: Record<string, Alert> = {};
+    for (const a of alerts) {
+      if (a.lat == null || a.lng == null) continue;
+      const prev = latestAlertPerTourist[a.tourist_id];
+      if (!prev || new Date(a.created_at ?? 0) > new Date(prev.created_at ?? 0)) {
+        latestAlertPerTourist[a.tourist_id] = a;
+      }
+    }
+    for (const a of Object.values(latestAlertPerTourist)) {
+      if (merged[a.tourist_id]) {
+        merged[a.tourist_id].status = (a.status || 'safe') as 'safe' | 'alert' | 'danger';
+      } else {
+        merged[a.tourist_id] = {
+          touristId: a.tourist_id,
+          username: a.username ?? a.tourist_id,
+          lat: a.lat!,
+          lng: a.lng!,
+          status: (a.status || 'safe') as 'safe' | 'alert' | 'danger',
+        };
+      }
+    }
+
+    return Object.values(merged);
+  })();
+
+  // Stats
+  const statsTotal = displayUsers.length;
+  const statsSafe = displayUsers.filter(u => u.status === 'safe').length;
+  const statsAlert = displayUsers.filter(u => u.status === 'alert').length;
+  const statsDanger = displayUsers.filter(u => u.status === 'danger').length;
+
+  // Format danger zones for map
+  const mapDangerZones = dangerZones.map(zone => ({
+    id: zone.id,
+    name: zone.name,
+    lat: zone.lat,
+    lng: zone.lng,
+    radius: zone.radius,
+    level: (zone.level as 'low' | 'medium' | 'high') || 'medium',
+  }));
+
+  const getLevelColor = (level: string | null) => {
+    switch (level) {
+      case 'low': case 'Low': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/50';
+      case 'medium': case 'Medium': return 'bg-orange-500/20 text-orange-400 border-orange-500/50';
+      case 'high': case 'High': return 'bg-red-500/20 text-red-400 border-red-500/50';
+      case 'Critical': return 'bg-red-600/30 text-red-300 border-red-600/50';
+      default: return 'bg-muted';
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen pt-20 pb-12 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-primary" />
+          <p className="text-muted-foreground">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state - show empty dashboard with refresh button
+  if (!users && !alerts && !dangerZones) {
+    return (
+      <div className="min-h-screen pt-20 pb-12 flex items-center justify-center">
+        <div className="text-center">
+          <AlertTriangle className="w-12 h-12 mx-auto mb-4 text-destructive" />
+          <h2 className="text-2xl font-bold mb-2">Error Loading Dashboard</h2>
+          <p className="text-muted-foreground mb-4">Failed to load data from backend</p>
+          <Button onClick={() => window.location.reload()}>
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Refresh Page
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen pt-20 pb-12">
+      <div className="container mx-auto px-4">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="font-display text-3xl font-bold mb-2">
+              Admin <span className="gradient-text">Dashboard</span>
+            </h1>
+            <p className="text-muted-foreground flex items-center gap-2">
+              <Shield className="w-4 h-4" />
+              Danger Zones stored on Blockchain • Real-time updates enabled
+            </p>
+          </div>
+          <div className="flex items-center gap-4">
+            <Button
+              onClick={() => {
+                loadData();
+                toast({
+                  title: 'Refreshing...',
+                  description: 'Dashboard data is being refreshed.',
+                });
+              }}
+              variant="outline"
+              className="gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Refresh
+            </Button>
+            {walletAddress && (
+              <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-muted/30 border border-border">
+                <Wallet className="w-4 h-4 text-primary" />
+                <span className="text-sm font-mono">
+                  {walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}
+                </span>
+              </div>
+            )}
+            <Button onClick={handleLogout} variant="outline" className="gap-2">
+              <LogOut className="w-4 h-4" />
+              Logout
+            </Button>
+          </div>
+        </div>
+
+        {/* Stats Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+          <div className="glass-card rounded-xl p-6">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-primary/20 flex items-center justify-center">
+                <Users className="w-6 h-6 text-primary" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{statsTotal}</p>
+                <p className="text-sm text-muted-foreground">Total Users</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="glass-card rounded-xl p-6">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-success/20 flex items-center justify-center">
+                <CheckCircle className="w-6 h-6 text-success" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{statsSafe}</p>
+                <p className="text-sm text-muted-foreground">Safe</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="glass-card rounded-xl p-6">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-warning/20 flex items-center justify-center">
+                <Bell className="w-6 h-6 text-warning" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{statsAlert}</p>
+                <p className="text-sm text-muted-foreground">Alert</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="glass-card rounded-xl p-6">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-destructive/20 flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6 text-destructive" />
+              </div>
+              <div>
+                <p className="text-2xl font-bold">{statsDanger}</p>
+                <p className="text-sm text-muted-foreground">Emergency</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Live Map */}
+        <div className="glass-card rounded-2xl p-6 mb-6">
+          <h2 className="font-display text-xl font-semibold mb-4 flex items-center gap-2">
+            <MapPin className="w-5 h-5 text-primary" />
+            Live User Tracking Map
+            <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-success/20 text-success flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+              Live
+            </span>
+          </h2>
+          <div className="h-[400px] rounded-xl overflow-hidden">
+            <LeafletMap
+              dangerZones={mapDangerZones}
+              userLocations={mapLocations}
+              showDangerZones={true}
+              showUserMarkers={true}
+              isAdmin={true}
+            />
+          </div>
+        </div>
+
+        {/* Database Alerts - Real-time */}
+        {alerts.length > 0 && (
+          <div className="glass-card rounded-2xl p-6 mb-6 border-2 border-destructive/50">
+            <h2 className="font-display text-xl font-semibold mb-4 flex items-center gap-2 text-destructive">
+              <AlertTriangle className="w-5 h-5 animate-pulse" />
+              Active Alerts
+              <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-destructive/20 text-destructive">
+                {alerts.length} active
+              </span>
+            </h2>
+            <div className="space-y-3 max-h-64 overflow-y-auto">
+              {alerts.map((alert) => {
+                // Find user status from displayUsers
+                const user = displayUsers.find(u => u.tourist_id === alert.tourist_id);
+                const userStatus = user?.status || alert.status || 'safe';
+                const statusColors = {
+                  safe: { bg: 'bg-green-500/20', text: 'text-green-400', border: 'border-green-500/50' },
+                  alert: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', border: 'border-yellow-500/50' },
+                  danger: { bg: 'bg-red-500/20', text: 'text-red-400', border: 'border-red-500/50' },
+                };
+                const sc = statusColors[userStatus as keyof typeof statusColors] || statusColors.safe;
+
+                return (
+                  <div
+                    key={alert.id}
+                    className={`p-4 rounded-xl border ${alert.alert_type === 'entered_danger_zone'
+                      ? 'bg-destructive/10 border-destructive/30'
+                      : alert.status === 'danger'
+                        ? 'bg-destructive/10 border-destructive/30'
+                        : 'bg-warning/10 border-warning/30'
+                      }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className={`w-4 h-4 ${alert.status === 'danger' ? 'text-destructive' : 'text-warning'}`} />
+                          <span className="font-medium">{alert.username}</span>
+                          {alert.zone_name && (
+                            <>
+                              <span className="text-xs text-muted-foreground">entered</span>
+                              <span className="font-medium text-destructive">{alert.zone_name}</span>
+                            </>
+                          )}
+                          {/* User Status Badge */}
+                          <span className={`text-xs px-2 py-1 rounded-full border ${sc.bg} ${sc.text} ${sc.border}`}>
+                            {userStatus.toUpperCase()}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1 font-mono">{alert.tourist_id}</p>
+                        {alert.lat && alert.lng && (
+                          <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                            <MapPin className="w-3 h-3" />
+                            {alert.lat.toFixed(4)}, {alert.lng.toFixed(4)}
+                          </p>
+                        )}
+                        <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                          <Clock className="w-3 h-3" />
+                          {alert.created_at && parseUTC(alert.created_at).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => dismissAlert(alert.id)}
+                          className="text-muted-foreground hover:text-foreground"
+                          disabled={userStatus !== 'safe'}
+                          title={userStatus !== 'safe' ? `Cannot dismiss - User is ${userStatus.toUpperCase()}` : 'Dismiss alert'}
+                        >
+                          Dismiss
+                        </Button>
+                        {userStatus !== 'safe' && (
+                          <span className="text-xs text-muted-foreground">
+                            User is {userStatus.toUpperCase()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Registered Users Table */}
+          <div className="glass-card rounded-2xl p-6">
+            <h2 className="font-display text-xl font-semibold mb-4 flex items-center gap-2">
+              <Users className="w-5 h-5 text-primary" />
+              Registered Tourists
+              <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-primary/20 text-primary flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                {statsTotal} registered
+              </span>
+            </h2>
+
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {displayUsers.length === 0 ? (
+                <p className="text-muted-foreground text-center py-8">No registered tourists yet</p>
+              ) : (
+                displayUsers.map((user) => {
+                  const statusColors = {
+                    safe: { border: 'border-green-500/40', avatar: 'bg-green-500/20 border-green-500', text: 'text-green-400', badge: 'bg-green-500/20 text-green-400 border-green-500/50', emoji: '✅' },
+                    alert: { border: 'border-amber-500/40', avatar: 'bg-amber-500/20 border-amber-500', text: 'text-amber-400', badge: 'bg-amber-500/20 text-amber-400 border-amber-500/50', emoji: '⚠️' },
+                    danger: { border: 'border-red-500/50', avatar: 'bg-red-500/20 border-red-500', text: 'text-red-400', badge: 'bg-red-500/20 text-red-400 border-red-500/50', emoji: '🚨' },
+                  };
+                  const sc = statusColors[user.status as keyof typeof statusColors] || statusColors.safe;
+                  
+                  // Find user's current location
+                  const userLocation = userLocations.find(loc => loc.tourist_id === user.tourist_id);
+                  
+                  // Check if user is in any danger zone
+                  const isInDangerZone = dangerZones.some(zone => {
+                    if (!userLocation) return false;
+                    const distance = Math.sqrt(
+                      Math.pow(userLocation.lat - zone.lat, 2) + 
+                      Math.pow(userLocation.lng - zone.lng, 2)
+                    ) * 111000; // Convert to meters
+                    return distance <= zone.radius;
+                  });
+                  
+                  return (
+                    <div
+                      key={user.user_id}
+                      className={`p-4 rounded-xl bg-muted/30 hover:bg-muted/50 transition-colors border ${
+                        isInDangerZone ? 'border-destructive/80 bg-destructive/10' : sc.border
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`w-10 h-10 rounded-full ${sc.avatar} border-2 flex items-center justify-center flex-shrink-0 font-bold text-sm ${sc.text}`}>
+                            {user.username?.slice(0, 2).toUpperCase() || 'TU'}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="font-semibold truncate">{user.username}</p>
+                            <p className="text-xs text-muted-foreground font-mono truncate">{user.tourist_id}</p>
+                            {user.email && (
+                              <p className="text-xs text-muted-foreground mt-0.5 truncate">📧 {user.email}</p>
+                            )}
+                            {userLocation && (
+                              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                                <MapPin className="w-3 h-3" />
+                                {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
+                              </p>
+                            )}
+                            <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              Registered: {user.created_at && parseUTC(user.created_at).toLocaleDateString()}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end gap-2 flex-shrink-0">
+                          <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                            isInDangerZone 
+                              ? 'bg-destructive/30 text-destructive border-destructive/50 animate-pulse' 
+                              : sc.badge
+                          }`}>
+                            {isInDangerZone ? '🚨 EMERGENCY' : `${sc.emoji} ${user.status?.toUpperCase() || 'SAFE'}`}
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1 text-xs h-7"
+                            onClick={() => setNotifyTarget(user)}
+                          >
+                            <Send className="w-3 h-3" />
+                            Notify
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Recent Alerts History */}
+          <div className="glass-card rounded-2xl p-6">
+            <h2 className="font-display text-xl font-semibold mb-4 flex items-center gap-2">
+              <Bell className="w-5 h-5 text-primary" />
+              Alert Activity
+            </h2>
+
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {alerts.length === 0 ? (
+                <p className="text-muted-foreground text-center py-8">No alerts yet</p>
+              ) : (
+                alerts.slice(0, 10).map((alert) => {
+                  // Find user status
+                  const user = displayUsers.find(u => u.tourist_id === alert.tourist_id);
+                  const userStatus = user?.status || alert.status || 'safe';
+                  const statusColors = {
+                    safe: { bg: 'bg-green-500/20', text: 'text-green-400', border: 'border-green-500/50', emoji: '✅' },
+                    alert: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', border: 'border-yellow-500/50', emoji: '⚠️' },
+                    danger: { bg: 'bg-red-500/20', text: 'text-red-400', border: 'border-red-500/50', emoji: '🚨' },
+                  };
+                  const sc = statusColors[userStatus as keyof typeof statusColors] || statusColors.safe;
+
+                  return (
+                    <div
+                      key={alert.id}
+                      className={`p-4 rounded-xl border ${alert.status === 'danger' ? 'bg-destructive/10 border-destructive/30' : 'bg-warning/10 border-warning/30'}`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-2">
+                            {alert.status === 'danger' ? (
+                              <AlertTriangle className="w-4 h-4 text-destructive" />
+                            ) : (
+                              <Bell className="w-4 h-4 text-warning" />
+                            )}
+                            <span className="font-medium">{alert.username}</span>
+                            {/* User Status Badge */}
+                            <span className={`text-xs px-2 py-1 rounded-full border ${sc.bg} ${sc.text} ${sc.border}`}>
+                              {sc.emoji} {userStatus.toUpperCase()}
+                            </span>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-1 font-mono">{alert.tourist_id}</p>
+                          {alert.alert_type === 'entered_danger_zone' && (
+                            <p className="text-xs text-destructive mt-1">
+                              Entered: {alert.zone_name} ({alert.zone_level})
+                            </p>
+                          )}
+                          <p className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
+                            <Clock className="w-3 h-3" />
+                            {alert.created_at && (() => {
+                              const d = parseUTC(alert.created_at);
+                              const now = new Date();
+                              const isToday = d.toDateString() === now.toDateString();
+                              const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                              return isToday
+                                ? `Today ${time}`
+                                : `${d.toLocaleDateString([], { day: '2-digit', month: '2-digit' })} ${time}`;
+                            })()}
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => dismissAlert(alert.id)}
+                          className="text-muted-foreground hover:text-foreground flex-shrink-0 ml-2"
+                          disabled={userStatus !== 'safe'}
+                          title={userStatus !== 'safe' ? `Cannot dismiss - User is ${userStatus.toUpperCase()}` : 'Dismiss alert'}
+                        >
+                          Dismiss
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Danger Zones */}
+          <div className="lg:col-span-2 glass-card rounded-2xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-4">
+                <h2 className="font-display text-xl font-semibold flex items-center gap-2">
+                  <Shield className="w-5 h-5 text-primary" />
+                  Danger Zones (Blockchain)
+                  <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-primary/20 text-primary">
+                    {dangerZones.length}
+                  </span>
+                </h2>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={() => navigate('/blockchain-danger-zones')}
+                  variant="outline"
+                  className="gap-2 text-xs h-8"
+                  title="Manage danger zones on blockchain only"
+                >
+                  <Shield className="w-4 h-4" />
+                  Blockchain Danger Zones
+                </Button>
+                <Button
+                  onClick={() => setShowAddZone(!showAddZone)}
+                  className="btn-gradient"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Zone
+                </Button>
+              </div>
+            </div>
+
+            {/* Add Zone Form */}
+            {showAddZone && (
+              <div className="mb-6 p-4 rounded-xl bg-muted/30 border border-border">
+                <h3 className="font-medium mb-4">Add New Danger Zone</h3>
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                  <Input
+                    placeholder="Zone Name"
+                    value={newZone.name}
+                    onChange={(e) => setNewZone({ ...newZone, name: e.target.value })}
+                    className="bg-muted/50"
+                  />
+                  <Input
+                    placeholder="Latitude"
+                    type="number"
+                    step="0.000001"
+                    value={newZone.lat}
+                    onChange={(e) => setNewZone({ ...newZone, lat: e.target.value })}
+                    className="bg-muted/50"
+                  />
+                  <Input
+                    placeholder="Longitude"
+                    type="number"
+                    step="0.000001"
+                    value={newZone.lng}
+                    onChange={(e) => setNewZone({ ...newZone, lng: e.target.value })}
+                    className="bg-muted/50"
+                  />
+                  <Input
+                    placeholder="Radius (m)"
+                    type="number"
+                    value={newZone.radius}
+                    onChange={(e) => setNewZone({ ...newZone, radius: e.target.value })}
+                    className="bg-muted/50"
+                  />
+                  <select
+                    value={newZone.level}
+                    onChange={(e) => setNewZone({ ...newZone, level: e.target.value as 'Low' | 'Medium' | 'High' | 'Critical' })}
+                    className="px-3 py-2 rounded-lg bg-muted/50 border border-border"
+                  >
+                    <option value="Low">Low Risk</option>
+                    <option value="Medium">Medium Risk</option>
+                    <option value="High">High Risk</option>
+                    <option value="Critical">Critical Risk</option>
+                  </select>
+                </div>
+                <Button
+                  onClick={addDangerZone}
+                  className="btn-gradient mt-4"
+                >
+                  Save Zone
+                </Button>
+              </div>
+            )}
+
+            {/* Zones List */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {dangerZones.length === 0 ? (
+                <p className="text-muted-foreground col-span-full text-center py-8">
+                  No danger zones added yet
+                </p>
+              ) : (
+                dangerZones.map((zone) => (
+                  <div
+                    key={zone.id}
+                    className={`p-4 rounded-xl border ${getLevelColor(zone.level)}`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <h4 className="font-medium">{zone.name}</h4>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {zone.lat.toFixed(4)}, {zone.lng.toFixed(4)}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          Radius: {zone.radius}m
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => removeDangerZone(zone.id)}
+                        className="p-2 hover:bg-destructive/20 rounded-lg transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4 text-destructive" />
+                      </button>
+                    </div>
+                    <div className="mt-2">
+                      <span className={`text-xs font-medium uppercase px-2 py-1 rounded ${getLevelColor(zone.level)}`}>
+                        {zone.level} Risk
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Send Notification Modal */}
+      {notifyTarget && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="glass-card rounded-2xl p-6 max-w-md w-full border border-border shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-primary" />
+                <h3 className="font-display text-lg font-semibold">Send Alert</h3>
+              </div>
+              <button
+                onClick={() => setNotifyTarget(null)}
+                className="p-1.5 hover:bg-muted/50 rounded-lg transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="mb-4 p-3 rounded-lg bg-muted/30 border border-border/50">
+              <p className="text-sm font-medium">{notifyTarget.username}</p>
+              <p className="text-xs text-muted-foreground font-mono">{notifyTarget.tourist_id}</p>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Alert Type</label>
+                <select
+                  value={notifyType}
+                  onChange={(e) => setNotifyType(e.target.value as any)}
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm"
+                >
+                  <option value="info">ℹ️ Information</option>
+                  <option value="warning">⚠️ Warning</option>
+                  <option value="danger">🚨 Danger Alert</option>
+                  <option value="evacuation">🏃 Evacuation Order</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Message</label>
+                <textarea
+                  value={notifyMessage}
+                  onChange={(e) => setNotifyMessage(e.target.value)}
+                  placeholder="Type your alert message..."
+                  className="w-full px-3 py-2 rounded-lg bg-muted/50 border border-border text-sm h-24 resize-none"
+                />
+              </div>
+
+              <Button
+                onClick={sendNotification}
+                disabled={!notifyMessage.trim() || isSendingNotification}
+                className="w-full btn-gradient gap-2"
+              >
+                {isSendingNotification ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+                Send Notification
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default AdminDashboard;
