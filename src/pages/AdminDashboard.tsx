@@ -317,7 +317,7 @@ const AdminDashboard: React.FC = () => {
       // Extract blockchain index from id (format: "zone-{index}" or use blockchainIndex)
       const zone = dangerZones.find(z => z.id === id);
       const blockchainIndex = (zone as any)?.blockchainIndex;
-      
+
       if (blockchainIndex === undefined) {
         toast({
           title: 'Error',
@@ -327,17 +327,20 @@ const AdminDashboard: React.FC = () => {
         return;
       }
 
-      await api.blockchainDangerZones.delete(blockchainIndex, walletAddress || 'admin');
-      setDangerZones(prev => prev.filter(z => z.id !== id));
+      await api.blockchainDangerZones.delete(blockchainIndex);
+      
+      // Refresh danger zones from blockchain after deletion
+      await loadData();
 
       toast({
         title: 'Zone Removed from Blockchain',
         description: 'Danger zone has been removed from blockchain.',
       });
     } catch (error) {
+      console.error('Delete error:', error);
       toast({
         title: 'Error',
-        description: 'Failed to remove danger zone.',
+        description: error instanceof Error ? error.message : 'Failed to remove danger zone.',
         variant: 'destructive',
       });
     }

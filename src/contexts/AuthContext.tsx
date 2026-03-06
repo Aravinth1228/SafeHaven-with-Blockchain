@@ -268,27 +268,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         console.error('Failed to update profile status in MongoDB:', err);
       }
 
-      // Update on blockchain with meta-transaction
-      try {
-        const statusMap = { safe: 0, alert: 1, danger: 2 };
-        console.log('📝 Updating status on blockchain...');
-        const currentWalletAddress = walletAddressRef.current;
-        if (currentWalletAddress) {
-          // Check if user is registered on blockchain first
-          const isRegistered = await checkRegistration();
-          if (isRegistered) {
-            await signAndUpdateStatus(statusMap[status]);
-            console.log('✅ Blockchain status update successful');
-          } else {
-            console.warn('⚠️ User not registered on blockchain, skipping status update');
-          }
-        } else {
-          console.warn('⚠️ Wallet not connected, skipping blockchain status update');
-        }
-      } catch (err) {
-        console.error('⚠️ Blockchain status update failed:', err);
-        // Continue anyway
-      }
+      // Blockchain status update temporarily disabled due to contract issues
+      // Status is stored in MongoDB and visible on admin dashboard
+      console.log('ℹ️ Blockchain status update skipped - using MongoDB storage');
     }
   };
 

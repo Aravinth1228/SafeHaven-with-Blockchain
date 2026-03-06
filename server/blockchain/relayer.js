@@ -764,6 +764,13 @@ class BlockchainRelayer {
   }
 
   /**
+   * Get the relayer wallet address
+   */
+  getRelayerAddress() {
+    return this.wallet ? this.wallet.address : null;
+  }
+
+  /**
    * Remove danger zone from blockchain
    */
   async removeDangerZone(adminAddress, zoneIndex) {
@@ -773,6 +780,26 @@ class BlockchainRelayer {
 
     try {
       console.log('📤 Removing danger zone from blockchain (index:', zoneIndex, ')');
+      console.log('Admin address:', adminAddress);
+
+      // First check if the zone exists and is active
+      try {
+        const zone = await this.contract.dangerZones(zoneIndex);
+        console.log('Zone info:', {
+          zoneId: zone.zoneId,
+          name: zone.name,
+          isActive: zone.isActive
+        });
+
+        if (!zone.isActive) {
+          throw new Error(`Zone at index ${zoneIndex} is already inactive`);
+        }
+      } catch (checkErr) {
+        if (checkErr.code === 'CALL_EXCEPTION' || checkErr.reason === 'execution reverted') {
+          throw new Error(`Invalid zone index: ${zoneIndex}. Zone may not exist.`);
+        }
+        throw checkErr;
+      }
 
       // Call contract function directly
       const tx = await this.contract.removeDangerZone(zoneIndex);
@@ -787,7 +814,10 @@ class BlockchainRelayer {
       };
     } catch (error) {
       console.error('Danger zone removal failed:', error);
-      throw new Error(`Transaction failed: ${error.reason || error.message}`);
+      if (error.reason) {
+        throw new Error(`Contract reverted: ${error.reason}`);
+      }
+      throw new Error(`Transaction failed: ${error.message}`);
     }
   }
 }

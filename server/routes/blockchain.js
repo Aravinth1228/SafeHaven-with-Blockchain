@@ -167,18 +167,33 @@ router.post('/meta-tx', async (req, res) => {
     switch (action) {
       case 'register':
         result = await relayer.registerTourist(wallet, message, signature);
-        
+
         // Also save to MongoDB for faster queries and additional data
         try {
+          const { ethers } = require('ethers');
+          
+          // Decode the registration data to extract user info
+          const registerInterface = new ethers.Interface([
+            "function registerTourist(string username, string email, string phone, uint256 dateOfBirth) external returns (string)"
+          ]);
+          const decoded = registerInterface.decodeFunctionData('registerTourist', message.data);
+          
+          console.log('📝 Decoded registration data:', {
+            username: decoded.username,
+            email: decoded.email,
+            phone: decoded.phone,
+            dateOfBirth: decoded.dateOfBirth.toString()
+          });
+
           await Profile.findOneAndUpdate(
             { wallet_address: wallet },
             {
               wallet_address: wallet,
               tourist_id: result.touristId || message.touristId,
-              username: message.username,
-              email: message.email,
-              phone: message.phone,
-              dob: new Date(parseInt(message.dateOfBirth) * 1000).toISOString(),
+              username: decoded.username,
+              email: decoded.email,
+              phone: decoded.phone,
+              dob: new Date(Number(decoded.dateOfBirth) * 1000).toISOString(),
               status: 'safe',
               updated_at: new Date()
             },
@@ -197,10 +212,11 @@ router.post('/meta-tx', async (req, res) => {
         // Also update MongoDB profile status
         try {
           const statusMap = { 0: 'safe', 1: 'alert', 2: 'danger' };
-          
+          const newStatus = statusMap[message.status] || 'safe';
+
           // First try to find by wallet_address
           let profile = await Profile.findOne({ wallet_address: wallet });
-          
+
           // If not found, try searching by tourist_id from blockchain
           if (!profile) {
             const touristInfo = await relayer.getTourist(wallet);
@@ -208,15 +224,32 @@ router.post('/meta-tx', async (req, res) => {
               profile = await Profile.findOne({ tourist_id: touristInfo.touristId });
             }
           }
-          
+
           if (profile) {
             await Profile.findByIdAndUpdate(profile._id, {
-              status: statusMap[message.status] || 'safe',
+              status: newStatus,
               updated_at: new Date()
             });
             console.log('✅ MongoDB status updated for:', wallet, 'Tourist ID:', profile.tourist_id);
           } else {
-            console.warn('⚠️ No MongoDB profile found for wallet:', wallet);
+            // Profile doesn't exist - create it with blockchain info
+            const touristInfo = await relayer.getTourist(wallet);
+            if (touristInfo && touristInfo.touristId) {
+              const newProfile = await Profile.create({
+                wallet_address: wallet,
+                tourist_id: touristInfo.touristId,
+                username: touristInfo.username || `User-${wallet.substring(0, 6)}`,
+                email: '',
+                phone: '',
+                dob: null,
+                status: newStatus,
+                created_at: new Date(),
+                updated_at: new Date()
+              });
+              console.log('✅ MongoDB profile created for:', wallet, 'Tourist ID:', newProfile.tourist_id);
+            } else {
+              console.warn('⚠️ No blockchain info found for wallet:', wallet);
+            }
           }
         } catch (dbErr) {
           console.error('⚠️ Failed to update MongoDB status:', dbErr.message);

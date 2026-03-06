@@ -274,7 +274,6 @@ router.post('/', async (req, res) => {
 router.delete('/:index', async (req, res) => {
   try {
     const { index } = req.params;
-    const { admin_wallet } = req.body;
 
     if (!relayer.isInitialized()) {
       return res.status(503).json({
@@ -284,8 +283,21 @@ router.delete('/:index', async (req, res) => {
       });
     }
 
+    // Use relayer wallet (which should be an admin)
+    const adminWallet = relayer.getRelayerAddress();
+    
+    if (!adminWallet) {
+      return res.status(500).json({
+        success: false,
+        error: 'Relayer wallet not available'
+      });
+    }
+
+    console.log('🗑️ Deleting danger zone at index:', index);
+    console.log('Admin wallet (relayer):', adminWallet);
+
     // Remove danger zone from blockchain
-    const result = await relayer.removeDangerZone(admin_wallet, parseInt(index));
+    const result = await relayer.removeDangerZone(adminWallet, parseInt(index));
 
     res.json({
       success: true,
@@ -298,12 +310,16 @@ router.delete('/:index', async (req, res) => {
         blockNumber: result?.blockNumber
       },
       blockchainEnabled: true,
-      message: 'Danger zone removed from blockchain only'
+      message: 'Danger zone removed from blockchain'
     });
 
   } catch (error) {
     console.error('Remove danger zone error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: error.reason || error.shortMessage || 'Unknown blockchain error'
+    });
   }
 });
 
