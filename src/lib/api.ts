@@ -85,6 +85,18 @@ export const deleteBlockchainDangerZone = (index: number) =>
   fetchAPI(`/blockchain/danger-zones/${index}`, {
     method: "DELETE",
   });
+export const updateBlockchainDangerZone = (index: number, zoneData: {
+  name: string;
+  radius: number;
+  level: string;
+  created_by: string;
+  signature?: string;
+  message?: any;
+}) =>
+  fetchAPI(`/blockchain/danger-zones/${index}`, {
+    method: "PUT",
+    body: JSON.stringify(zoneData),
+  });
 
 // Alerts
 export const getActiveAlerts = () => fetchAPI("/alerts");

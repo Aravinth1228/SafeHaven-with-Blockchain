@@ -65,10 +65,10 @@ export type ZoneLevelType = typeof ZoneLevel[keyof typeof ZoneLevel];
 export const CONTRACT_ADDRESSES = {
   // Ethereum Mainnet
   mainnet: "",
-  // Sepolia Testnet - UPDATE THIS WITH YOUR DEPLOYED CONTRACT ADDRESS
-  sepolia: "0x02F55E421205a6Ddd78277eF74a26cc8Cb63C357",
+  // Sepolia Testnet - Newly deployed ERC-2771 contract
+  sepolia: "0xa2FEcd68ebB27d53eF9224C06B81a427C2F303ce",
   // Local development
-  localhost: "0x02F55E421205a6Ddd78277eF74a26cc8Cb63C357",
+  localhost: "0xa2FEcd68ebB27d53eF9224C06B81a427C2F303ce",
 } as const;
 
 export type NetworkName = keyof typeof CONTRACT_ADDRESSES;

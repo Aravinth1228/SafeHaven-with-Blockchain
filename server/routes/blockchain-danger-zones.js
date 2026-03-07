@@ -33,7 +33,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 
 /**
  * GET /api/blockchain/danger-zones
- * Get all danger zones from blockchain
+ * Get all danger zones from blockchain (ACTIVE ONLY)
  */
 router.get('/', async (req, res) => {
   try {
@@ -45,26 +45,34 @@ router.get('/', async (req, res) => {
       });
     }
 
-    // Get all danger zones from blockchain
-    const zones = await relayer.getAllDangerZones();
+    // Get ALL danger zones from blockchain (including inactive ones for proper indexing)
+    const allZones = await relayer.getAllDangerZones();
 
     // Level enum mapping (0=Low, 1=Medium, 2=High, 3=Critical)
     const levelNames = ['Low', 'Medium', 'High', 'Critical'];
 
-    // Format zones for frontend
-    const formattedZones = zones.map((zone, index) => ({
-      id: zone.zoneId || `zone-${index}`,
-      blockchainIndex: index,
-      zoneId: zone.zoneId,
-      name: zone.name,
-      lat: Number(zone.latitude) / 1e6, // Convert from int256 * 1e6
-      lng: Number(zone.longitude) / 1e6,
-      radius: Number(zone.radius),
-      level: levelNames[parseInt(zone.level)] || 'Medium',
-      createdBy: zone.createdBy,
-      createdAt: new Date(Number(zone.createdAt) * 1000),
-      isActive: zone.isActive
-    }));
+    // Filter only active zones but keep ORIGINAL blockchain index
+    const formattedZones = allZones
+      .map((zone, blockchainIndex) => ({
+        zone,
+        blockchainIndex // Store the original blockchain index
+      }))
+      .filter(item => item.zone.isActive) // Filter only active zones
+      .map(item => ({
+        id: item.zone.zoneId || `zone-${item.blockchainIndex}`,
+        blockchainIndex: item.blockchainIndex, // ORIGINAL blockchain index (for delete/update)
+        zoneId: item.zone.zoneId,
+        name: item.zone.name,
+        lat: Number(item.zone.latitude) / 1e6,
+        lng: Number(item.zone.longitude) / 1e6,
+        radius: Number(item.zone.radius),
+        level: levelNames[parseInt(item.zone.level)] || 'Medium',
+        createdBy: item.zone.createdBy,
+        createdAt: new Date(Number(item.zone.createdAt) * 1000),
+        isActive: true
+      }));
+
+    console.log('📊 Active danger zones:', formattedZones.length, 'Total zones on chain:', allZones.length);
 
     res.json({
       success: true,
@@ -269,7 +277,7 @@ router.post('/', async (req, res) => {
 
 /**
  * DELETE /api/blockchain/danger-zones/:index
- * Remove danger zone from blockchain (NO MongoDB deletion needed)
+ * Remove danger zone from blockchain (marks as inactive)
  */
 router.delete('/:index', async (req, res) => {
   try {
@@ -285,7 +293,7 @@ router.delete('/:index', async (req, res) => {
 
     // Use relayer wallet (which should be an admin)
     const adminWallet = relayer.getRelayerAddress();
-    
+
     if (!adminWallet) {
       return res.status(500).json({
         success: false,
@@ -296,6 +304,44 @@ router.delete('/:index', async (req, res) => {
     console.log('🗑️ Deleting danger zone at index:', index);
     console.log('Admin wallet (relayer):', adminWallet);
 
+    // First check if zone exists (even if inactive)
+    let zone;
+    try {
+      zone = await relayer.contract.dangerZones(parseInt(index));
+      console.log('Zone info from contract:', {
+        zoneId: zone.zoneId,
+        name: zone.name,
+        isActive: zone.isActive
+      });
+    } catch (contractErr) {
+      console.error('Error fetching zone from contract:', contractErr);
+      return res.status(404).json({
+        success: false,
+        error: `Danger zone at index ${index} does not exist`
+      });
+    }
+
+    if (!zone || !zone.zoneId) {
+      return res.status(404).json({
+        success: false,
+        error: `Danger zone at index ${index} not found`
+      });
+    }
+
+    if (!zone.isActive) {
+      console.log('⚠️  Zone already inactive (idempotent delete)');
+      // Zone already inactive - return success anyway (idempotent delete)
+      return res.json({
+        success: true,
+        data: {
+          blockchainIndex: parseInt(index),
+          removed: true,
+          alreadyInactive: true
+        },
+        message: 'Danger zone was already removed (idempotent delete)'
+      });
+    }
+
     // Remove danger zone from blockchain
     const result = await relayer.removeDangerZone(adminWallet, parseInt(index));
 
@@ -303,7 +349,8 @@ router.delete('/:index', async (req, res) => {
       success: true,
       data: {
         blockchainIndex: parseInt(index),
-        removed: true
+        removed: true,
+        alreadyInactive: false
       },
       blockchain: {
         txHash: result?.txHash,
@@ -315,8 +362,114 @@ router.delete('/:index', async (req, res) => {
 
   } catch (error) {
     console.error('Remove danger zone error:', error);
-    res.status(500).json({ 
-      success: false, 
+    
+    // Handle "already inactive" error gracefully (idempotent delete)
+    if (error.message && error.message.includes('already inactive')) {
+      return res.json({
+        success: true,
+        data: {
+          blockchainIndex: parseInt(req.params.index),
+          removed: true,
+          alreadyInactive: true
+        },
+        message: 'Danger zone was already removed (idempotent delete)'
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.reason || error.shortMessage || 'Unknown blockchain error'
+    });
+  }
+});
+
+/**
+ * PUT /api/blockchain/danger-zones/:index
+ * Update danger zone on blockchain
+ */
+router.put('/:index', async (req, res) => {
+  try {
+    const { index } = req.params;
+    const { name, radius, level, created_by } = req.body;
+
+    if (!relayer.isInitialized()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Blockchain not initialized',
+        blockchainEnabled: false
+      });
+    }
+
+    // Validate input
+    if (!name || !radius || !level) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: name, radius, level'
+      });
+    }
+
+    // Use relayer wallet (which should be an admin)
+    const adminWallet = relayer.getRelayerAddress();
+
+    if (!adminWallet) {
+      return res.status(500).json({
+        success: false,
+        error: 'Relayer wallet not available'
+      });
+    }
+
+    console.log('📝 Updating danger zone at index:', index);
+    console.log('Update data:', { name, radius, level });
+
+    // Convert level string to enum number (Low=0, Medium=1, High=2, Critical=3)
+    const levelEnum = { 'Low': 0, 'Medium': 1, 'High': 2, 'Critical': 3 }[level] || 1;
+
+    // Update danger zone on blockchain
+    const result = await relayer.updateDangerZone(
+      adminWallet,
+      parseInt(index),
+      name,
+      radius,
+      levelEnum
+    );
+
+    // Update MongoDB if zone exists there too (for consistency)
+    try {
+      const { DangerZone } = require('../models');
+      const zone = await DangerZone.findOne({ blockchain_zone_id: `ZONE-${parseInt(index) + 1}` });
+      if (zone) {
+        zone.name = name;
+        zone.radius = radius;
+        zone.level = level;
+        await zone.save();
+        console.log('✅ MongoDB zone updated');
+      }
+    } catch (mongoErr) {
+      console.log('⚠️  MongoDB update skipped (zone may not exist in MongoDB)');
+    }
+
+    res.json({
+      success: true,
+      data: {
+        blockchainIndex: parseInt(index),
+        name,
+        radius,
+        level,
+        updated: true
+      },
+      blockchain: {
+        txHash: result?.txHash,
+        blockNumber: result?.blockNumber
+      },
+      blockchainEnabled: true,
+      message: 'Danger zone updated on blockchain'
+    });
+
+  } catch (error) {
+    console.error('Update danger zone error:', error);
+    res.status(500).json({
+      success: false,
       error: error.message,
       details: error.reason || error.shortMessage || 'Unknown blockchain error'
     });

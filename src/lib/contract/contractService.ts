@@ -68,15 +68,21 @@ class ContractService {
     dob: Date
   ): Promise<ethers.ContractTransactionResponse> {
     this.ensureInitialized();
-    
+
     const dobTimestamp = toContractTimestamp(dob);
-    
+
     const tx = await this.contract!.registerTourist(
-      username, 
-      email, 
-      phone, 
+      username,
+      email,
+      phone,
       dobTimestamp
     );
+    return tx;
+  }
+
+  async deleteTourist(touristAddress: string): Promise<ethers.ContractTransactionResponse> {
+    this.ensureInitialized();
+    const tx = await this.contract!.deleteTourist(touristAddress);
     return tx;
   }
 
@@ -137,22 +143,56 @@ class ContractService {
     return Number(count);
   }
 
+  async getAllTouristAddresses(): Promise<string[]> {
+    this.ensureInitialized();
+    try {
+      // Try to get from contract (admin only)
+      const count = await this.getTouristCount();
+      const addresses: string[] = [];
+      
+      // Get all registered tourists from events
+      const filter = this.contract!.filters.TouristRegistered();
+      const events = await this.contract!.queryFilter(filter, -10000); // Last 10000 blocks
+      
+      for (const event of events) {
+        const wallet = event.args?.wallet;
+        if (wallet && !addresses.includes(wallet)) {
+          addresses.push(wallet);
+        }
+      }
+      
+      return addresses;
+    } catch (error) {
+      console.error('Error fetching tourist addresses:', error);
+      return [];
+    }
+  }
+
   async getAllTourists(): Promise<Tourist[]> {
     this.ensureInitialized();
-    const tourists = await this.contract!.getAllTourists();
-    return tourists.map((t: any) => ({
-      touristId: t.touristId,
-      username: t.username,
-      email: t.email,
-      phone: t.phone,
-      dob: t.dateOfBirth,
-      status: t.status,
-      registeredAt: t.registeredAt,
-      isRegistered: t.isActive,
-      lastLatitude: t.lastLatitude,
-      lastLongitude: t.lastLongitude,
-      lastLocationUpdate: t.lastLocationUpdate,
-    }));
+    try {
+      const tourists = await this.contract!.getAllTourists();
+      return tourists.map((t: any) => ({
+        touristId: t.touristId,
+        username: t.username,
+        email: t.email,
+        phone: t.phone,
+        dob: t.dateOfBirth,
+        status: t.status,
+        registeredAt: t.registeredAt,
+        isRegistered: t.isActive,
+        lastLatitude: t.lastLatitude,
+        lastLongitude: t.lastLongitude,
+        lastLocationUpdate: t.lastLocationUpdate,
+      }));
+    } catch (error) {
+      console.error('Error fetching all tourists (admin only):', error);
+      // Fallback: get tourist count and fetch individually
+      const count = await this.getTouristCount();
+      const tourists: Tourist[] = [];
+      // Note: We can't fetch by index directly, so return empty array
+      return tourists;
+    }
   }
 
   async updateStatus(status: keyof typeof TouristStatus): Promise<ethers.ContractTransactionResponse> {

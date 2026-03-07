@@ -17,18 +17,22 @@ import {
   Database,
   Send,
   MessageSquare,
-  X
+  X,
+  Edit2
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
 import { useWallet } from '@/contexts/WalletContext';
+import { useContract } from '@/hooks/useContract';
+import { contractService } from '@/lib/contract/contractService';
 import { useToast } from '@/hooks/use-toast';
 import LeafletMap from '@/components/LeafletMap';
 import { useRealtimeAlerts } from '@/hooks/useRealtimeAlerts';
 import { useRealtimeLocations } from '@/hooks/useRealtimeLocations';
 import { useRealtimeProfiles } from '@/hooks/useRealtimeProfiles';
 import { api } from '@/lib/api';
+import { fromContractTimestamp } from '@/lib/contract/types';
 
 interface Profile {
   id?: string;
@@ -61,11 +65,14 @@ interface Alert {
 
 interface DangerZone {
   id: string;
+  blockchainIndex?: number;  // Index on blockchain
+  zoneId?: string;           // Zone ID from blockchain
   name: string;
   lat: number;
   lng: number;
   radius: number;
   level: string | null;
+  isActive?: boolean;        // Whether zone is active on blockchain
   created_at?: string;
 }
 
@@ -91,6 +98,7 @@ const AdminDashboard: React.FC = () => {
   const { toast } = useToast();
   const { adminLogout } = useAuth();
   const { disconnectWallet, walletAddress } = useWallet();
+  const { getAllTourists, getAllTouristAddresses, getAllAlerts, getAllDangerZones, isInitialized, initialize, deleteTourist } = useContract();
 
   // API Data State
   const [users, setUsers] = useState<Profile[]>([]);
@@ -98,10 +106,16 @@ const AdminDashboard: React.FC = () => {
   const [dangerZones, setDangerZones] = useState<DangerZone[]>([]);
   const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
 
+  // Test Mode - Ignore blockchain data
+  const [testMode, setTestMode] = useState(false);
+
   // UI State
   const [isLoading, setIsLoading] = useState(true);
   const [newZone, setNewZone] = useState({ name: '', lat: '', lng: '', radius: '', level: 'Medium' as 'Low' | 'Medium' | 'High' | 'Critical' });
   const [showAddZone, setShowAddZone] = useState(false);
+  const [editingZone, setEditingZone] = useState<DangerZone | null>(null);
+  const [showEditZone, setShowEditZone] = useState(false);
+  const [editZoneData, setEditZoneData] = useState({ name: '', radius: '', level: '' });
 
   // Notification state
   const [notifyTarget, setNotifyTarget] = useState<Profile | null>(null);
@@ -109,26 +123,121 @@ const AdminDashboard: React.FC = () => {
   const [notifyType, setNotifyType] = useState<'info' | 'warning' | 'danger' | 'evacuation'>('warning');
   const [isSendingNotification, setIsSendingNotification] = useState(false);
 
-  // Load data from Node.js backend
+  // Load data from Blockchain
   const loadData = useCallback(async () => {
     try {
-      console.log('🔄 Loading admin dashboard data...');
+      console.log('🔄 Loading admin dashboard data...', testMode ? '(TEST MODE - Local Only)' : '(Blockchain + Local)');
 
-      const [usersData, alertsData, zonesData] = await Promise.all([
+      let blockchainTourists = [];
+      
+      // Only fetch blockchain data if NOT in test mode
+      if (!testMode && isInitialized) {
+        try {
+          // Try to get all tourists from blockchain (admin only)
+          blockchainTourists = await getAllTourists();
+          console.log('📊 Blockchain tourists loaded:', blockchainTourists.length);
+        } catch (error) {
+          console.log('⚠️ Cannot fetch blockchain data, using local only...');
+        }
+      } else if (!testMode && !isInitialized) {
+        // Initialize contract if needed
+        await initialize();
+        try {
+          blockchainTourists = await getAllTourists();
+          console.log('📊 Blockchain tourists loaded:', blockchainTourists.length);
+        } catch (error) {
+          console.log('⚠️ Cannot fetch blockchain data');
+        }
+      } else {
+        console.log('🧪 TEST MODE: Skipping blockchain data');
+      }
+
+      // Convert blockchain tourists to Profile format
+      const profilesFromBlockchain: Profile[] = blockchainTourists.map(tourist => ({
+        user_id: tourist.touristId,
+        tourist_id: tourist.touristId,
+        username: tourist.username,
+        email: tourist.email,
+        phone: tourist.phone,
+        dob: tourist.dob ? new Date(Number(tourist.dob) * 1000).toISOString() : null,
+        wallet_address: null, // Will be filled below
+        status: tourist.status === 0 ? 'safe' : tourist.status === 1 ? 'alert' : 'danger',
+        created_at: tourist.registeredAt ? new Date(Number(tourist.registeredAt) * 1000).toISOString() : new Date().toISOString(),
+      }));
+
+      // Get wallet addresses from blockchain events
+      if (!testMode && isInitialized) {
+        try {
+          const addresses = await getAllTouristAddresses();
+          console.log('📍 Tourist addresses from events:', addresses.length);
+          
+          // Match addresses with profiles
+          addresses.forEach(addr => {
+            const profile = profilesFromBlockchain.find(p => {
+              // Try to match by checking if this address has this touristId
+              return true; // We'll set all addresses
+            });
+            if (profile && !profile.wallet_address) {
+              profile.wallet_address = addr;
+            }
+          });
+        } catch (error) {
+          console.error('Error getting addresses:', error);
+        }
+      }
+
+      // Get from API
+      const [usersData, alertsData, zonesData, locationsData] = await Promise.all([
         api.users.getAll(),
         api.alerts.getActive(),
-        api.blockchainDangerZones.getAll(), // Use blockchain danger zones instead of MongoDB
+        api.blockchainDangerZones.getAll(),
+        api.locations.getAll(),
       ]);
 
-      console.log('📊 Data loaded:', {
-        users: usersData?.data?.length || 0,
-        alerts: alertsData?.data?.length || 0,
-        zones: zonesData?.data?.length || 0,
+      // Merge data based on testMode
+      const apiProfiles = usersData?.data || [];
+      const apiLocations = locationsData?.data || [];
+      
+      // Create a map to avoid duplicates
+      const userMap = new Map<string, Profile>();
+      
+      // Add API profiles first
+      apiProfiles.forEach((p: Profile) => {
+        userMap.set(p.tourist_id, p);
+      });
+      
+      // Add blockchain profiles only if NOT in test mode
+      if (!testMode) {
+        profilesFromBlockchain.forEach(p => {
+          if (!userMap.has(p.tourist_id)) {
+            userMap.set(p.tourist_id, p);
+          }
+        });
+      }
+
+      const mergedUsers = Array.from(userMap.values());
+
+      // Merge locations with user data
+      const locationsWithUsers = apiLocations.map((loc: UserLocation) => {
+        const user = mergedUsers.find(u => u.tourist_id === loc.tourist_id);
+        return {
+          ...loc,
+          status: user?.status || loc.status || 'safe',
+        };
       });
 
-      setUsers(usersData?.data || []);
+      console.log('📊 Data loaded:', {
+        users: mergedUsers.length,
+        alerts: alertsData?.data?.length || 0,
+        zones: zonesData?.data?.length || 0,
+        locations: locationsWithUsers.length,
+        testMode: testMode,
+      });
+
+      setUsers(mergedUsers);
       setAlerts(alertsData?.data || []);
       setDangerZones(zonesData?.data || []);
+      setUserLocations(locationsWithUsers);
     } catch (error) {
       console.error('❌ Error loading data:', error);
       toast({
@@ -139,7 +248,7 @@ const AdminDashboard: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [toast]);
+  }, [toast, isInitialized, initialize, getAllTourists, testMode]);
 
   // Realtime alerts subscription (polling)
   useRealtimeAlerts({
@@ -262,6 +371,53 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
+  const handleDeleteUser = async (user: Profile) => {
+    if (!confirm(`Delete ${user.username} from blockchain?\n\n⚠️ This action cannot be undone!\n\nThe user will be permanently removed from the blockchain.`)) {
+      return;
+    }
+
+    try {
+      // Get user's wallet address from blockchain
+      // For now, we need to find it from the tourist data
+      // In a real scenario, you'd have the wallet address stored
+      
+      // Since we don't have wallet address directly, we'll need to get it from blockchain
+      // For now, skip if no wallet address
+      if (!user.wallet_address) {
+        toast({
+          title: 'Error',
+          description: 'Cannot delete: Wallet address not available',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      console.log('🗑️ Deleting user from blockchain:', user.wallet_address);
+      
+      const success = await deleteTourist(user.wallet_address);
+      
+      if (success) {
+        // Remove from local state
+        setUsers(prev => prev.filter(u => u.user_id !== user.user_id));
+        
+        toast({
+          title: 'User Deleted',
+          description: `${user.username} has been deleted from blockchain.`,
+        });
+        
+        // Reload data to reflect changes
+        setTimeout(() => loadData(), 1000);
+      }
+    } catch (error) {
+      console.error('Delete error:', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to delete user',
+        variant: 'destructive',
+      });
+    }
+  };
+
   const addDangerZone = async () => {
     if (!newZone.name || !newZone.lat || !newZone.lng || !newZone.radius) {
       toast({
@@ -313,34 +469,125 @@ const AdminDashboard: React.FC = () => {
       return;
     }
 
-    try {
-      // Extract blockchain index from id (format: "zone-{index}" or use blockchainIndex)
-      const zone = dangerZones.find(z => z.id === id);
-      const blockchainIndex = (zone as any)?.blockchainIndex;
+    if (!confirm('Are you sure you want to remove this danger zone? This will mark it as inactive on the blockchain.')) {
+      return;
+    }
 
-      if (blockchainIndex === undefined) {
+    setIsLoading(true);
+    try {
+      // Find the zone and get its blockchain index
+      const zone = dangerZones.find(z => z.id === id);
+      
+      console.log('🔍 Zone to delete:', zone);
+
+      // Use blockchainIndex if available, otherwise try to parse from zoneId
+      let blockchainIndex = zone?.blockchainIndex;
+
+      if (blockchainIndex === undefined && zone?.zoneId) {
+        // Try to extract index from zoneId format "ZONE-1", "ZONE-2", etc.
+        const match = zone.zoneId.match(/ZONE-(\d+)/i);
+        if (match) {
+          blockchainIndex = parseInt(match[1]) - 1; // Convert to 0-based index
+        }
+      }
+
+      // If still undefined, try to use the index from the id itself
+      if (blockchainIndex === undefined && id) {
+        const match = id.match(/zone-(\d+)/i);
+        if (match) {
+          blockchainIndex = parseInt(match[1]);
+        }
+      }
+
+      console.log('📍 Blockchain index for delete:', blockchainIndex);
+
+      if (blockchainIndex === undefined || isNaN(blockchainIndex)) {
         toast({
           title: 'Error',
-          description: 'Cannot remove MongoDB zones. Please use blockchain zones only.',
+          description: 'Cannot determine blockchain index for this zone.',
           variant: 'destructive',
         });
         return;
       }
 
-      await api.blockchainDangerZones.delete(blockchainIndex);
-      
+      console.log('🗑️ Deleting danger zone at blockchain index:', blockchainIndex);
+      const response = await api.blockchainDangerZones.delete(blockchainIndex);
+
       // Refresh danger zones from blockchain after deletion
       await loadData();
 
-      toast({
-        title: 'Zone Removed from Blockchain',
-        description: 'Danger zone has been removed from blockchain.',
-      });
+      // Check if zone was already inactive (idempotent delete)
+      if (response.data?.alreadyInactive) {
+        toast({
+          title: 'Zone Already Removed',
+          description: 'This danger zone was already removed from blockchain.',
+          variant: 'default',
+        });
+      } else {
+        toast({
+          title: 'Zone Removed from Blockchain',
+          description: 'Danger zone has been successfully removed from blockchain.',
+        });
+      }
     } catch (error) {
       console.error('Delete error:', error);
       toast({
         title: 'Error',
         description: error instanceof Error ? error.message : 'Failed to remove danger zone.',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const startEditZone = (zone: DangerZone) => {
+    setEditingZone(zone);
+    setEditZoneData({
+      name: zone.name,
+      radius: zone.radius.toString(),
+      level: zone.level || 'Medium'
+    });
+    setShowEditZone(true);
+  };
+
+  const updateZone = async () => {
+    if (!editingZone) return;
+
+    try {
+      const blockchainIndex = editingZone.blockchainIndex;
+
+      if (blockchainIndex === undefined) {
+        toast({
+          title: 'Error',
+          description: 'Cannot update MongoDB zones. Please use blockchain zones only.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      await api.blockchainDangerZones.update(blockchainIndex, {
+        name: editZoneData.name,
+        radius: parseInt(editZoneData.radius),
+        level: editZoneData.level,
+        created_by: walletAddress || 'admin'
+      });
+
+      // Refresh danger zones from blockchain after update
+      await loadData();
+
+      setShowEditZone(false);
+      setEditingZone(null);
+
+      toast({
+        title: 'Zone Updated',
+        description: 'Danger zone has been updated on blockchain.',
+      });
+    } catch (error) {
+      console.error('Update error:', error);
+      toast({
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to update danger zone.',
         variant: 'destructive',
       });
     }
@@ -513,6 +760,22 @@ const AdminDashboard: React.FC = () => {
           <div className="flex items-center gap-4">
             <Button
               onClick={() => {
+                setTestMode(!testMode);
+                toast({
+                  title: testMode ? '🔗 Blockchain Mode' : '🧪 Test Mode',
+                  description: testMode ? 'Loading from blockchain' : 'Ignoring blockchain data (local only)',
+                });
+                loadData();
+              }}
+              variant={testMode ? "destructive" : "outline"}
+              size="sm"
+              className="gap-2"
+              title={testMode ? 'Switch to Blockchain Mode' : 'Switch to Test Mode (Ignore Blockchain)'}
+            >
+              {testMode ? '🧪 Test Mode' : '🔗 Blockchain'}
+            </Button>
+            <Button
+              onClick={() => {
                 loadData();
                 toast({
                   title: 'Refreshing...',
@@ -524,6 +787,54 @@ const AdminDashboard: React.FC = () => {
             >
               <RefreshCw className="w-4 h-4" />
               Refresh
+            </Button>
+            <Button
+              onClick={() => {
+                if (!confirm('⚠️ DELETE ALL LOCAL USERS?\n\nThis will:\n- Delete users from localStorage\n- Remove all locations\n- Clear all sessions\n\nBlockchain users will remain (permanent).\n\nContinue?')) {
+                  return;
+                }
+
+                console.log('🗑️ Deleting all local users...\n');
+                
+                // Delete users from localStorage
+                localStorage.removeItem('users');
+                console.log('✅ Removed: users');
+                
+                // Remove all user locations
+                Object.keys(localStorage).forEach(key => {
+                  if (key.startsWith('userLocation-')) {
+                    localStorage.removeItem(key);
+                    console.log(`✅ Removed: ${key}`);
+                  }
+                });
+                
+                // Clear current user
+                localStorage.removeItem('currentUser');
+                console.log('✅ Removed: currentUser');
+                
+                // Clear admin session
+                localStorage.removeItem('adminWalletAddress');
+                localStorage.removeItem('isAdmin');
+                console.log('✅ Removed: admin session');
+                
+                // Clear wallet
+                localStorage.removeItem('walletAddress');
+                console.log('✅ Removed: walletAddress');
+                
+                toast({
+                  title: '🗑️ Users Deleted',
+                  description: 'All local users deleted. Refreshing...',
+                });
+                
+                setTimeout(() => window.location.reload(), 1000);
+              }}
+              variant="outline"
+              size="sm"
+              className="gap-2 text-destructive hover:text-destructive border-destructive/50"
+              title="Delete all local users"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete Local
             </Button>
             {walletAddress && (
               <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-muted/30 border border-border">
@@ -766,21 +1077,34 @@ const AdminDashboard: React.FC = () => {
                         </div>
                         <div className="flex flex-col items-end gap-2 flex-shrink-0">
                           <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
-                            isInDangerZone 
-                              ? 'bg-destructive/30 text-destructive border-destructive/50 animate-pulse' 
+                            isInDangerZone
+                              ? 'bg-destructive/30 text-destructive border-destructive/50 animate-pulse'
                               : sc.badge
                           }`}>
                             {isInDangerZone ? '🚨 EMERGENCY' : `${sc.emoji} ${user.status?.toUpperCase() || 'SAFE'}`}
                           </span>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="gap-1 text-xs h-7"
-                            onClick={() => setNotifyTarget(user)}
-                          >
-                            <Send className="w-3 h-3" />
-                            Notify
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1 text-xs h-7"
+                              onClick={() => setNotifyTarget(user)}
+                            >
+                              <Send className="w-3 h-3" />
+                              Notify
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="gap-1 text-xs h-7 text-destructive border-destructive/50 hover:text-destructive"
+                              onClick={() => handleDeleteUser(user)}
+                              disabled={!user.wallet_address}
+                              title={user.wallet_address ? 'Delete from blockchain' : 'Wallet address not available'}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              Delete
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -976,12 +1300,22 @@ const AdminDashboard: React.FC = () => {
                           Radius: {zone.radius}m
                         </p>
                       </div>
-                      <button
-                        onClick={() => removeDangerZone(zone.id)}
-                        className="p-2 hover:bg-destructive/20 rounded-lg transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4 text-destructive" />
-                      </button>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => startEditZone(zone)}
+                          className="p-2 hover:bg-primary/20 rounded-lg transition-colors"
+                          title="Edit zone"
+                        >
+                          <Edit2 className="w-4 h-4 text-primary" />
+                        </button>
+                        <button
+                          onClick={() => removeDangerZone(zone.id)}
+                          className="p-2 hover:bg-destructive/20 rounded-lg transition-colors"
+                          title="Delete zone"
+                        >
+                          <Trash2 className="w-4 h-4 text-destructive" />
+                        </button>
+                      </div>
                     </div>
                     <div className="mt-2">
                       <span className={`text-xs font-medium uppercase px-2 py-1 rounded ${getLevelColor(zone.level)}`}>
@@ -995,6 +1329,83 @@ const AdminDashboard: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Edit Danger Zone Modal */}
+      {showEditZone && editingZone && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="glass-card rounded-2xl p-6 max-w-md w-full border border-border shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Edit2 className="w-5 h-5 text-primary" />
+                <h3 className="font-display text-lg font-semibold">Edit Danger Zone</h3>
+              </div>
+              <button
+                onClick={() => {
+                  setShowEditZone(false);
+                  setEditingZone(null);
+                }}
+                className="p-1.5 hover:bg-muted/50 rounded-lg transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">Zone Name</label>
+                <Input
+                  value={editZoneData.name}
+                  onChange={(e) => setEditZoneData({ ...editZoneData, name: e.target.value })}
+                  placeholder="Enter zone name"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">Radius (meters)</label>
+                <Input
+                  type="number"
+                  value={editZoneData.radius}
+                  onChange={(e) => setEditZoneData({ ...editZoneData, radius: e.target.value })}
+                  placeholder="Enter radius"
+                />
+              </div>
+
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">Risk Level</label>
+                <select
+                  value={editZoneData.level}
+                  onChange={(e) => setEditZoneData({ ...editZoneData, level: e.target.value })}
+                  className="w-full px-3 py-2 border border-border rounded-md bg-background text-foreground"
+                >
+                  <option value="Low">Low Risk</option>
+                  <option value="Medium">Medium Risk</option>
+                  <option value="High">High Risk</option>
+                  <option value="Critical">Critical Risk</option>
+                </select>
+              </div>
+
+              <div className="flex gap-2 mt-6">
+                <Button
+                  onClick={updateZone}
+                  className="flex-1 btn-gradient"
+                >
+                  Update Zone
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowEditZone(false);
+                    setEditingZone(null);
+                  }}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Send Notification Modal */}
       {notifyTarget && (

@@ -764,6 +764,35 @@ class BlockchainRelayer {
   }
 
   /**
+   * Update danger zone on blockchain
+   */
+  async updateDangerZone(adminAddress, zoneIndex, name, radius, level) {
+    if (!this.initialized) {
+      throw new Error('Blockchain relayer not initialized');
+    }
+
+    try {
+      console.log('📝 Updating danger zone (index:', zoneIndex, ')');
+      console.log('Update data:', { name, radius, level });
+
+      // Call contract function directly
+      const tx = await this.contract.updateDangerZone(zoneIndex, name, radius, level);
+      console.log('📝 Update danger zone tx:', tx.hash);
+      const receipt = await tx.wait();
+      console.log('✅ Danger zone update confirmed:', receipt.hash);
+
+      return {
+        success: true,
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber
+      };
+    } catch (error) {
+      console.error('Danger zone update failed:', error);
+      throw new Error(`Transaction failed: ${error.reason || error.message}`);
+    }
+  }
+
+  /**
    * Get the relayer wallet address
    */
   getRelayerAddress() {

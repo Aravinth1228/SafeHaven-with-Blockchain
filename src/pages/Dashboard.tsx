@@ -21,11 +21,13 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
+import { useWallet } from '@/contexts/WalletContext';
+import { useContract } from '@/hooks/useContract';
 import { useToast } from '@/hooks/use-toast';
 import LeafletMap from '@/components/LeafletMap';
 import { useDangerZoneDetection } from '@/hooks/useDangerZoneDetection';
 import { api } from '@/lib/api';
-import { useSendLocation } from '@/hooks/useSendLocation';
+import { useBlockchainLocationUpdate } from '@/hooks/useBlockchainLocationUpdate';
 
 interface Notification {
   id: string;
@@ -86,6 +88,8 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { user, isAuthenticated, updateStatus, logout } = useAuth();
+  const { walletAddress } = useWallet();
+  const { isInitialized, initialize } = useContract();
 
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [currentPlace, setCurrentPlace] = useState<CurrentPlace | null>(null);
@@ -124,8 +128,15 @@ const Dashboard: React.FC = () => {
     }
   }, [user?.status]);
 
-  // Send location to backend
-  useSendLocation(user?.id || '', user?.touristId || '', status, user?.username);
+  // Send location to backend AND blockchain
+  useBlockchainLocationUpdate({
+    userId: user?.id || '',
+    touristId: user?.touristId || '',
+    status: status,
+    username: user?.username,
+    isInitialized,
+    initialize,
+  });
 
   const { nearestZone } = useDangerZoneDetection(
     location,

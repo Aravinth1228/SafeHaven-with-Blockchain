@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { Wallet, User, Mail, Phone, Calendar, Lock, CheckCircle, ArrowRight, Loader2, Eye, EyeOff } from 'lucide-react';
+import { Wallet, User, Mail, Phone, Calendar, Lock, CheckCircle, ArrowRight, Loader2, Eye, EyeOff, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -29,6 +29,45 @@ const SignUp: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const clearAllData = () => {
+    if (!confirm('Clear all user data?\n\nThis will delete:\n- All local user accounts\n- Current session\n- Location data\n\nBlockchain data will NOT be deleted.')) {
+      return;
+    }
+
+    const keysToClear = [
+      'users',
+      'currentUser',
+      'adminWalletAddress',
+      'isAdmin',
+      'walletAddress',
+    ];
+
+    let count = 0;
+    keysToClear.forEach(key => {
+      if (localStorage.getItem(key)) {
+        localStorage.removeItem(key);
+        count++;
+      }
+    });
+
+    // Clear location data
+    Object.keys(localStorage).forEach(key => {
+      if (key.startsWith('userLocation-') || key.startsWith('notification-')) {
+        localStorage.removeItem(key);
+        count++;
+      }
+    });
+
+    toast({
+      title: 'Data Cleared',
+      description: `Cleared ${count} items. Refreshing...`,
+    });
+
+    setTimeout(() => {
+      window.location.reload();
+    }, 1000);
+  };
 
   const handleConnect = async () => {
     console.log('🔗 Connect button clicked');
@@ -172,6 +211,20 @@ const SignUp: React.FC = () => {
   return (
     <div className="min-h-screen pt-24 pb-12">
       <div className="container mx-auto px-4 max-w-lg">
+        {/* Clear Data Button */}
+        <div className="flex justify-end mb-4">
+          <Button
+            onClick={clearAllData}
+            variant="outline"
+            size="sm"
+            className="gap-2 text-destructive hover:text-destructive border-destructive/50"
+            title="Clear all user data"
+          >
+            <Trash2 className="w-4 h-4" />
+            Clear Data
+          </Button>
+        </div>
+
         {/* Step Indicator */}
         <div className="flex items-center justify-center gap-4 mb-12">
           {['Connect', 'Register'].map((label, index) => (

@@ -1,7 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback, useRef } from 'react';
 import { api } from '@/lib/api';
-import { useBlockchain } from '@/hooks/useBlockchain';
+import { useContract } from '@/hooks/useContract';
 import { useWallet } from '@/contexts/WalletContext';
+import { TouristStatus } from '@/lib/contract/abi';
 
 interface User {
   id: string;
@@ -53,11 +54,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [isVerifyingAdmin, setIsVerifyingAdmin] = useState(false);
   const [adminWalletAddress, setAdminWalletAddress] = useState<string | null>(null);
-  
+
   // Wallet and blockchain hooks
   const { walletAddress, isConnected } = useWallet();
-  const { signAndRegister, signAndUpdateStatus, signAndUpdateLocation, checkRegistration } = useBlockchain();
-  
+  const { registerTourist: contractRegisterTourist, updateStatus: contractUpdateStatus, isTouristRegistered } = useContract();
+
   // Use refs to always get current wallet address in callbacks
   const walletAddressRef = useRef<string | null>(walletAddress);
   useEffect(() => {
@@ -157,18 +158,56 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   ): Promise<boolean> => {
     const username = userData.username.toLowerCase();
 
-    // Check local storage for duplicate username
-    const users = JSON.parse(localStorage.getItem('users') || '{}');
-    if (users[username]) {
-      console.error('❌ Username already exists:', username);
+    // Check if wallet is connected
+    const currentWalletAddress = walletAddressRef.current;
+
+    if (!currentWalletAddress) {
+      console.error('⚠️ Wallet not connected. Please connect wallet first.');
       return false;
     }
 
-    // Check if wallet is connected
-    const currentWalletAddress = walletAddressRef.current;
-    
-    if (!currentWalletAddress) {
-      console.error('⚠️ Wallet not connected. Please connect wallet first.');
+    // FIRST: Register on blockchain with MetaMask popup
+    try {
+      console.log('📝 Registering on blockchain with MetaMask...');
+      console.log('📝 Wallet Address:', currentWalletAddress);
+
+      const dateOfBirth = Math.floor(new Date(userData.dob).getTime() / 1000);
+      console.log('📝 Date of Birth (Unix):', dateOfBirth);
+
+      // Call contract directly - MetaMask popup will appear
+      const success = await contractRegisterTourist(
+        userData.username,
+        userData.email,
+        userData.phone,
+        new Date(userData.dob)
+      );
+
+      if (!success) {
+        console.log('⚠️ Blockchain registration failed');
+        return false;
+      }
+
+      console.log('✅ Blockchain registration successful!');
+    } catch (err: any) {
+      // Check if it's an "already registered" error
+      if (err.message?.includes('Already registered') || err.message?.includes('already registered')) {
+        console.log('✅ User already registered on blockchain, continuing...');
+        return false; // Already registered, can't register again
+      } else {
+        console.error('❌ Blockchain registration failed:', err);
+        console.error('Error details:', {
+          message: err.message,
+          reason: err.reason,
+          code: err.code
+        });
+        return false;
+      }
+    }
+
+    // SECOND: Store locally only after blockchain success
+    const users = JSON.parse(localStorage.getItem('users') || '{}');
+    if (users[username]) {
+      console.error('❌ Username already exists:', username);
       return false;
     }
 
@@ -187,47 +226,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setUser(newUser);
     localStorage.setItem('currentUser', JSON.stringify(newUser));
 
-    // Register on blockchain with meta-transaction
-    try {
-      console.log('📝 Registering on blockchain...');
-      console.log('📝 Wallet Address:', currentWalletAddress);
-
-      // Check if already registered on blockchain
-      const alreadyRegistered = await checkRegistration();
-      if (alreadyRegistered) {
-        console.log('✅ User already registered on blockchain, skipping registration');
-      } else {
-        const dateOfBirth = Math.floor(new Date(userData.dob).getTime() / 1000);
-        console.log('📝 Date of Birth (Unix):', dateOfBirth);
-
-        const result = await signAndRegister({
-          username: userData.username,
-          email: userData.email,
-          phone: userData.phone,
-          dateOfBirth
-        });
-
-        console.log('✅ Blockchain registration successful:', result);
-      }
-    } catch (err: any) {
-      // Check if it's an "already registered" error
-      if (err.message?.includes('Already registered') || err.message?.includes('already registered')) {
-        console.log('✅ User already registered on blockchain, continuing...');
-      } else {
-        console.error('❌ Blockchain registration failed:', err);
-        console.error('Error details:', {
-          message: err.message,
-          reason: err.reason,
-          code: err.code
-        });
-
-        // Rollback local storage
-        delete users[username];
-        localStorage.setItem('users', JSON.stringify(users));
-        return false;
-      }
-    }
-
+    console.log('✅ User data stored locally');
     return true;
   };
 
@@ -268,9 +267,25 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         console.error('Failed to update profile status in MongoDB:', err);
       }
 
-      // Blockchain status update temporarily disabled due to contract issues
-      // Status is stored in MongoDB and visible on admin dashboard
-      console.log('ℹ️ Blockchain status update skipped - using MongoDB storage');
+      // Update status on blockchain with MetaMask popup
+      try {
+        console.log('📝 Updating status on blockchain...');
+        const statusMap: Record<string, keyof typeof TouristStatus> = {
+          'safe': 'Safe',
+          'alert': 'Alert',
+          'danger': 'Emergency'
+        };
+        
+        const contractStatus = statusMap[status];
+        const success = await contractUpdateStatus(contractStatus);
+        
+        if (success) {
+          console.log('✅ Blockchain status updated successfully!');
+        }
+      } catch (err) {
+        console.error('Failed to update status on blockchain:', err);
+        // Don't rollback - MongoDB is the source of truth
+      }
     }
   };
 

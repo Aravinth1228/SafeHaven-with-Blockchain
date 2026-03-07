@@ -138,12 +138,12 @@ export function useContract() {
     async (username: string, email: string, phone: string, dob: Date) => {
       try {
         setIsLoading(true);
-        
-        toast({ 
-          title: 'Registering', 
-          description: 'Please confirm transaction in MetaMask' 
+
+        toast({
+          title: 'Registering',
+          description: 'Please confirm transaction in MetaMask'
         });
-        
+
         const tx = await contractService.registerTourist(username, email, phone, dob);
         toast({ title: 'Transaction Sent', description: 'Registering on blockchain...' });
         await tx.wait();
@@ -151,6 +151,32 @@ export function useContract() {
         return true;
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Registration failed';
+        toast({ title: 'Error', description: message, variant: 'destructive' });
+        return false;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [toast]
+  );
+
+  const deleteTourist = useCallback(
+    async (touristAddress: string) => {
+      try {
+        setIsLoading(true);
+
+        toast({
+          title: 'Deleting User',
+          description: 'Please confirm transaction in MetaMask'
+        });
+
+        const tx = await contractService.deleteTourist(touristAddress);
+        toast({ title: 'Transaction Sent', description: 'Deleting from blockchain...' });
+        await tx.wait();
+        toast({ title: 'Success', description: 'User deleted from blockchain!' });
+        return true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Delete failed';
         toast({ title: 'Error', description: message, variant: 'destructive' });
         return false;
       } finally {
@@ -229,6 +255,22 @@ export function useContract() {
       return await contractService.getTouristCount();
     } catch {
       return 0;
+    }
+  }, []);
+
+  const getAllTouristAddresses = useCallback(async () => {
+    try {
+      return await contractService.getAllTouristAddresses();
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const isTouristRegistered = useCallback(async (address: string) => {
+    try {
+      return await contractService.isTouristRegistered(address);
+    } catch {
+      return false;
     }
   }, []);
 
@@ -375,12 +417,15 @@ export function useContract() {
     initialize,
     getOwner,
     registerTourist,
+    deleteTourist,
     updateStatus,
     updateLocation,
     getTourist,
     getTouristById,
     getAllTourists,
     getTouristCount,
+    getAllTouristAddresses,
+    isTouristRegistered,
     isAdmin,
     getAdmins,
     createDangerZone,
