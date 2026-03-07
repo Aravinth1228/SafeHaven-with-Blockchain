@@ -60,7 +60,7 @@ async function main() {
   console.log("\n💾 Deployment info saved to:", deploymentPath);
 
   // Also save to server directory for backend use
-  const serverDeploymentPath = path.join(__dirname, "..", "server", "blockchain-deployment.json");
+  const serverDeploymentPath = path.join(__dirname, "..", "..", "server", "blockchain-deployment.json");
   fs.writeFileSync(serverDeploymentPath, JSON.stringify(deploymentInfo, null, 2));
   console.log("💾 Backend deployment info saved to:", serverDeploymentPath);
 

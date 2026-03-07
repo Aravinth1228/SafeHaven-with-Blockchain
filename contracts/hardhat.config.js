@@ -24,9 +24,12 @@ module.exports = {
       chainId: 31337
     },
     sepolia: {
-      url: process.env.SEPOLIA_RPC_URL || "https://sepolia.infura.io/v3/" + process.env.INFURA_PROJECT_ID,
+      // Try multiple public RPCs
+      url: process.env.SEPOLIA_RPC_URL || 
+           (process.env.INFURA_PROJECT_ID ? `https://sepolia.infura.io/v3/${process.env.INFURA_PROJECT_ID}` : "https://ethereum-sepolia-rpc.publicnode.com"),
       accounts: process.env.ADMIN_PRIVATE_KEY ? [process.env.ADMIN_PRIVATE_KEY] : [],
-      chainId: 11155111
+      chainId: 11155111,
+      timeout: 60000, // 60 seconds timeout
     },
     mainnet: {
       url: process.env.MAINNET_RPC_URL || "https://mainnet.infura.io/v3/" + process.env.INFURA_PROJECT_ID,

@@ -88,6 +88,12 @@ contract TouristSafetyERC2771 is ERC2771Context {
         uint256 timestamp
     );
 
+    event TouristDeleted(
+        address indexed wallet,
+        string touristId,
+        uint256 timestamp
+    );
+
     event StatusUpdated(
         address indexed tourist,
         string touristId,
@@ -246,6 +252,34 @@ contract TouristSafetyERC2771 is ERC2771Context {
         emit TouristRegistered(_msgSender(), touristId, _username, block.timestamp);
 
         return touristId;
+    }
+
+    /**
+     * @notice Delete a tourist (admin only)
+     * @param _tourist Wallet address of the tourist to delete
+     */
+    function deleteTourist(address _tourist) external onlyAdmin {
+        require(tourists[_tourist].isActive, "Tourist not registered");
+        
+        // Get tourist data before deletion
+        Tourist memory tourist = tourists[_tourist];
+        
+        // Mark as inactive (soft delete)
+        tourists[_tourist].isActive = false;
+        
+        // Remove from registeredTourists array
+        for (uint256 i = 0; i < registeredTourists.length; i++) {
+            if (registeredTourists[i] == _tourist) {
+                registeredTourists[i] = registeredTourists[registeredTourists.length - 1];
+                registeredTourists.pop();
+                break;
+            }
+        }
+        
+        // Clear touristId mapping
+        delete touristIdToAddress[tourist.touristId];
+        
+        emit TouristDeleted(_tourist, tourist.touristId, block.timestamp);
     }
 
     /**
