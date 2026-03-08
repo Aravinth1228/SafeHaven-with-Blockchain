@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { Menu, X, Shield, Wallet, LogOut } from 'lucide-react';
+import { Menu, X, Shield, Wallet, LogOut, Network } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useWallet } from '@/contexts/WalletContext';
 import { useAuth } from '@/contexts/AuthContext';
+import AddSepoliaButton from '@/components/blockchain/AddSepoliaButton';
 
 const Navbar: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -57,6 +58,7 @@ const Navbar: React.FC = () => {
 
           {/* Wallet & Auth Status */}
           <div className="hidden md:flex items-center gap-4">
+            <AddSepoliaButton />
             {isConnected && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-muted border border-border">
                 <Wallet className="w-4 h-4 text-primary" />
@@ -89,6 +91,14 @@ const Navbar: React.FC = () => {
         {isOpen && (
           <div className="md:hidden py-4 border-t border-border/50">
             <div className="flex flex-col gap-2">
+              {/* Sepolia Network Button for Mobile */}
+              <div className="px-4 py-2">
+                <p className="text-xs text-muted-foreground mb-2">
+                  ⚠️ Network: <strong className="text-primary">Sepolia Testnet</strong>
+                </p>
+                <AddSepoliaButton />
+              </div>
+              
               {navLinks.map((link) => (
                 <Link
                   key={link.path}

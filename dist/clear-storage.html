@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Clear Storage - SafeHaven</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1a1a2e;
+      color: #fff;
+    }
+    .card {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 30px;
+      margin: 20px 0;
+      border: 1px solid #0f3460;
+    }
+    h1 { color: #e94560; }
+    button {
+      background: #e94560;
+      color: white;
+      border: none;
+      padding: 15px 30px;
+      border-radius: 8px;
+      font-size: 16px;
+      cursor: pointer;
+      margin: 10px 5px;
+    }
+    button:hover { background: #ff6b6b; }
+    .success {
+      background: #059669;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 20px 0;
+      display: none;
+    }
+    pre {
+      background: #0a0a15;
+      padding: 15px;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🧹 Clear Browser Storage</h1>
+    
+    <p>This will clear all SafeHaven data from your browser:</p>
+    <ul>
+      <li>Users</li>
+      <li>Current User</li>
+      <li>Admin Wallet</li>
+      <li>All cached data</li>
+    </ul>
+
+    <button onclick="clearStorage()">Clear All Browser Data</button>
+    
+    <div id="success" class="success">
+      ✅ Browser storage cleared! Redirecting to signup...
+    </div>
+
+    <h3>Current Storage:</h3>
+    <pre id="storageData"></pre>
+  </div>
+
+  <script>
+    function showStorage() {
+      const data = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        data[key] = localStorage.getItem(key);
+      }
+      document.getElementById('storageData').textContent = JSON.stringify(data, null, 2);
+    }
+    
+    function clearStorage() {
+      localStorage.clear();
+      sessionStorage.clear();
+      
+      document.getElementById('success').style.display = 'block';
+      document.getElementById('storageData').textContent = 'Cleared!';
+      
+      setTimeout(() => {
+        window.location.href = '/signup';
+      }, 2000);
+    }
+    
+    showStorage();
+  </script>
+</body>
+</html>

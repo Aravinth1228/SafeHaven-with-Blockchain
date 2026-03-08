@@ -59,15 +59,62 @@ export class BlockchainService {
     }
 
     this.provider = new ethers.BrowserProvider(window.ethereum);
+    
+    // Switch to Sepolia network if not already on it
+    const requiredChainId = 11155111; // Sepolia
+    try {
+      const chainIdHex = await window.ethereum.request({ method: 'eth_chainId' }) as string;
+      const currentChainId = parseInt(chainIdHex, 16);
+      
+      if (currentChainId !== requiredChainId) {
+        console.log('⚠️ Wrong network detected, switching to Sepolia...');
+        console.log('Current chainId:', currentChainId, 'Required:', requiredChainId);
+        
+        try {
+          await window.ethereum.request({
+            method: 'wallet_switchEthereumChain',
+            params: [{ chainId: `0x${requiredChainId.toString(16)}` }],
+          });
+          console.log('✅ Switched to Sepolia network');
+        } catch (switchError: any) {
+          // This error code indicates that the chain has not been added to MetaMask
+          if (switchError.code === 4902) {
+            console.log('⚠️ Sepolia not added to MetaMask, adding...');
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [{
+                chainId: `0x${requiredChainId.toString(16)}`,
+                chainName: 'Sepolia Testnet',
+                nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
+                rpcUrls: ['https://ethereum-sepolia-rpc.publicnode.com'],
+                blockExplorerUrls: ['https://sepolia.etherscan.io'],
+              }],
+            });
+            console.log('✅ Sepolia network added');
+          } else {
+            console.error('❌ Failed to switch network:', switchError);
+          }
+        }
+      } else {
+        console.log('✅ Already on Sepolia network');
+      }
+    } catch (err) {
+      console.error('❌ Error checking/switching network:', err);
+    }
+
+    // Refresh provider after network switch
+    await new Promise(resolve => setTimeout(resolve, 1000));
     const network = await this.provider.getNetwork();
     this.chainId = Number(network.chainId);
+    
+    console.log('🔗 Final Chain ID:', this.chainId);
 
     // Check if already connected
     try {
       const accounts = await window.ethereum.request({
         method: 'eth_accounts'
       }) as string[];
-      
+
       if (accounts.length > 0) {
         console.log('✅ Restoring existing wallet:', accounts[0]);
         this.signer = await this.provider.getSigner();
@@ -106,6 +153,14 @@ export class BlockchainService {
    */
   async setSigner(newSigner: ethers.Signer): Promise<void> {
     this.signer = newSigner;
+    
+    // Refresh chainId from the signer's provider to ensure it's current
+    if (newSigner.provider) {
+      const network = await newSigner.provider.getNetwork();
+      this.chainId = Number(network.chainId);
+      console.log('✅ Signer set, chainId refreshed:', this.chainId);
+    }
+    
     const address = await this.signer.getAddress();
     console.log('✅ Signer set:', address);
   }
@@ -144,12 +199,25 @@ export class BlockchainService {
 
   /**
    * Get domain separator for EIP-712 (using Forwarder contract)
+   * IMPORTANT: OpenZeppelin ERC2771Forwarder uses hardcoded name "ERC2771Forwarder"
+   * NOT the custom name passed to the constructor!
    */
   private async getDomainSeparator(): Promise<ethers.TypedDataDomain> {
+    // CRITICAL: Get chainId directly from MetaMask to ensure it matches what the user sees
+    let chainIdFromMetaMask: number;
+    try {
+      const chainIdHex = await window.ethereum!.request({ method: 'eth_chainId' }) as string;
+      chainIdFromMetaMask = parseInt(chainIdHex, 16);
+      console.log('🔐 getDomainSeparator - chainId from MetaMask:', chainIdFromMetaMask);
+    } catch (err) {
+      console.error('❌ Failed to get chainId from MetaMask, using cached:', err);
+      chainIdFromMetaMask = this.chainId;
+    }
+
     return {
-      name: 'SafeHeaven Trusted Forwarder',  // MUST match ERC2771Forwarder constructor
+      name: 'ERC2771Forwarder',  // MUST be exactly "ERC2771Forwarder" for OpenZeppelin
       version: '1',
-      chainId: BigInt(this.chainId),
+      chainId: chainIdFromMetaMask,  // Use chainId directly from MetaMask
       verifyingContract: this.forwarderAddress
     };
   }
@@ -168,6 +236,13 @@ export class BlockchainService {
     contractAddress: string
   ): Promise<{ signature: string; message: any }> {
     await this.ensureSigner();
+
+    // CRITICAL: Refresh chainId right before signing to ensure it matches current network
+    if (this.signer?.provider) {
+      const network = await this.signer.provider.getNetwork();
+      this.chainId = Number(network.chainId);
+      console.log('🔐 signRegisterTourist - Refreshed chainId:', this.chainId);
+    }
 
     const domain = await this.getDomainSeparator();
     const userAddress = await this.signer!.getAddress();
@@ -194,6 +269,7 @@ export class BlockchainService {
     console.log('🔐 Signing EIP-712 ForwardRequest...');
     console.log('Domain:', domain);
     console.log('ForwardRequest:', message);
+    console.log('🔐 chainId being used for signing:', this.chainId);
 
     const signature = await this.signer!.signTypedData(
       domain,
@@ -216,6 +292,13 @@ export class BlockchainService {
     contractAddress: string
   ): Promise<{ signature: string; message: any }> {
     await this.ensureSigner();
+
+    // CRITICAL: Refresh chainId right before signing
+    if (this.signer?.provider) {
+      const network = await this.signer.provider.getNetwork();
+      this.chainId = Number(network.chainId);
+      console.log('🔐 signUpdateStatus - Refreshed chainId:', this.chainId);
+    }
 
     const domain = await this.getDomainSeparator();
     const userAddress = await this.signer!.getAddress();
@@ -257,6 +340,13 @@ export class BlockchainService {
     contractAddress: string
   ): Promise<{ signature: string; message: any }> {
     await this.ensureSigner();
+
+    // CRITICAL: Refresh chainId right before signing
+    if (this.signer?.provider) {
+      const network = await this.signer.provider.getNetwork();
+      this.chainId = Number(network.chainId);
+      console.log('🔐 signUpdateLocation - Refreshed chainId:', this.chainId);
+    }
 
     const domain = await this.getDomainSeparator();
     const userAddress = await this.signer!.getAddress();
@@ -342,13 +432,14 @@ export class BlockchainService {
     console.log('Message:', message);
 
     // Convert BigInt values to strings for JSON serialization
+    // EXCEPT deadline (uint48) which must stay as Number for backend verification
     const serializedMessage = {
       from: message.from,
       to: message.to,
       value: message.value?.toString(),
       gas: message.gas?.toString(),
       nonce: message.nonce?.toString(),
-      deadline: message.deadline?.toString(),
+      deadline: Number(message.deadline),  // uint48 must be Number, not string
       data: message.data
     };
 

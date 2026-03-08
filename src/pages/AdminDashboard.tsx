@@ -18,7 +18,8 @@ import {
   Send,
   MessageSquare,
   X,
-  Edit2
+  Edit2,
+  Eraser
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -27,10 +28,11 @@ import { useWallet } from '@/contexts/WalletContext';
 import { useContract } from '@/hooks/useContract';
 import { contractService } from '@/lib/contract/contractService';
 import { useToast } from '@/hooks/use-toast';
-import LeafletMap from '@/components/LeafletMap';
+import MapLibreMap from '@/components/MapLibreMap';
 import { useRealtimeAlerts } from '@/hooks/useRealtimeAlerts';
 import { useRealtimeLocations } from '@/hooks/useRealtimeLocations';
 import { useRealtimeProfiles } from '@/hooks/useRealtimeProfiles';
+import { useSocket } from '@/hooks/useSocket';
 import { api } from '@/lib/api';
 import { fromContractTimestamp } from '@/lib/contract/types';
 
@@ -106,11 +108,9 @@ const AdminDashboard: React.FC = () => {
   const [dangerZones, setDangerZones] = useState<DangerZone[]>([]);
   const [userLocations, setUserLocations] = useState<UserLocation[]>([]);
 
-  // Test Mode - Ignore blockchain data
-  const [testMode, setTestMode] = useState(false);
-
   // UI State
   const [isLoading, setIsLoading] = useState(true);
+  const [testMode, setTestMode] = useState(false);
   const [newZone, setNewZone] = useState({ name: '', lat: '', lng: '', radius: '', level: 'Medium' as 'Low' | 'Medium' | 'High' | 'Critical' });
   const [showAddZone, setShowAddZone] = useState(false);
   const [editingZone, setEditingZone] = useState<DangerZone | null>(null);
@@ -129,7 +129,7 @@ const AdminDashboard: React.FC = () => {
       console.log('🔄 Loading admin dashboard data...', testMode ? '(TEST MODE - Local Only)' : '(Blockchain + Local)');
 
       let blockchainTourists = [];
-      
+
       // Only fetch blockchain data if NOT in test mode
       if (!testMode && isInitialized) {
         try {
@@ -170,7 +170,7 @@ const AdminDashboard: React.FC = () => {
         try {
           const addresses = await getAllTouristAddresses();
           console.log('📍 Tourist addresses from events:', addresses.length);
-          
+
           // Match addresses with profiles
           addresses.forEach(addr => {
             const profile = profilesFromBlockchain.find(p => {
@@ -197,15 +197,15 @@ const AdminDashboard: React.FC = () => {
       // Merge data based on testMode
       const apiProfiles = usersData?.data || [];
       const apiLocations = locationsData?.data || [];
-      
+
       // Create a map to avoid duplicates
       const userMap = new Map<string, Profile>();
-      
+
       // Add API profiles first
       apiProfiles.forEach((p: Profile) => {
         userMap.set(p.tourist_id, p);
       });
-      
+
       // Add blockchain profiles only if NOT in test mode
       if (!testMode) {
         profilesFromBlockchain.forEach(p => {
@@ -217,9 +217,14 @@ const AdminDashboard: React.FC = () => {
 
       const mergedUsers = Array.from(userMap.values());
 
+      // No filtering - show all users including test users
+      const filteredUsers = mergedUsers;
+
+      console.log('📊 Total users loaded:', filteredUsers.length);
+
       // Merge locations with user data
       const locationsWithUsers = apiLocations.map((loc: UserLocation) => {
-        const user = mergedUsers.find(u => u.tourist_id === loc.tourist_id);
+        const user = filteredUsers.find(u => u.tourist_id === loc.tourist_id);
         return {
           ...loc,
           status: user?.status || loc.status || 'safe',
@@ -227,14 +232,14 @@ const AdminDashboard: React.FC = () => {
       });
 
       console.log('📊 Data loaded:', {
-        users: mergedUsers.length,
+        users: filteredUsers.length,
         alerts: alertsData?.data?.length || 0,
         zones: zonesData?.data?.length || 0,
         locations: locationsWithUsers.length,
         testMode: testMode,
       });
 
-      setUsers(mergedUsers);
+      setUsers(filteredUsers);
       setAlerts(alertsData?.data || []);
       setDangerZones(zonesData?.data || []);
       setUserLocations(locationsWithUsers);
@@ -261,7 +266,7 @@ const AdminDashboard: React.FC = () => {
     enabled: true,
   });
 
-  // Realtime locations subscription (polling)
+  // Realtime locations subscription (polling) - Keep as fallback
   useRealtimeLocations({
     onLocationsLoaded: (locations) => {
       console.log('📍 Locations loaded:', locations.length);
@@ -280,6 +285,31 @@ const AdminDashboard: React.FC = () => {
       });
     },
     enabled: true,
+  });
+
+  // 🚀 REAL-TIME SOCKET.IO LOCATION UPDATES
+  useSocket({
+    enabled: true,
+    isAdmin: true,
+    onLocationUpdate: (location) => {
+      console.log('⚡ Real-time socket location update:', location.username, location.address);
+      setUserLocations(prev => {
+        const existingIndex = prev.findIndex(l => l.user_id === location.user_id || l.tourist_id === location.tourist_id);
+        if (existingIndex >= 0) {
+          const updated = [...prev];
+          updated[existingIndex] = {
+            ...updated[existingIndex],
+            lat: location.lat,
+            lng: location.lng,
+            status: location.status,
+            address: location.address,  // Update address
+            updated_at: location.updated_at,
+          };
+          return updated;
+        }
+        return [...prev, location];
+      });
+    },
   });
 
   // Realtime profiles subscription (polling)
@@ -377,12 +407,7 @@ const AdminDashboard: React.FC = () => {
     }
 
     try {
-      // Get user's wallet address from blockchain
-      // For now, we need to find it from the tourist data
-      // In a real scenario, you'd have the wallet address stored
-      
-      // Since we don't have wallet address directly, we'll need to get it from blockchain
-      // For now, skip if no wallet address
+      // Check if user has wallet address
       if (!user.wallet_address) {
         toast({
           title: 'Error',
@@ -393,26 +418,74 @@ const AdminDashboard: React.FC = () => {
       }
 
       console.log('🗑️ Deleting user from blockchain:', user.wallet_address);
-      
-      const success = await deleteTourist(user.wallet_address);
-      
-      if (success) {
+
+      // Call API to delete tourist from blockchain
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/blockchain/danger-zones/delete-tourist`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          wallet_address: user.wallet_address,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
         // Remove from local state
         setUsers(prev => prev.filter(u => u.user_id !== user.user_id));
-        
+
         toast({
           title: 'User Deleted',
           description: `${user.username} has been deleted from blockchain.`,
         });
-        
+
         // Reload data to reflect changes
         setTimeout(() => loadData(), 1000);
+      } else {
+        throw new Error(result.error || 'Failed to delete user');
       }
     } catch (error) {
       console.error('Delete error:', error);
       toast({
         title: 'Error',
         description: error instanceof Error ? error.message : 'Failed to delete user',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleClearDatabase = async () => {
+    if (!confirm('⚠️ CLEAR ALL DATABASE?\n\nThis will:\n- Delete ALL users from MongoDB\n- Remove ALL alerts\n- Clear ALL locations\n- Delete ALL notifications\n- Remove ALL danger zones from MongoDB\n\n⚠️ Blockchain data will NOT be affected (users and zones on blockchain are permanent).\n\nContinue?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/clear-db`, {
+        method: 'POST',
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        console.log('🗑️ Database cleared:', result.deleted);
+
+        toast({
+          title: '🗑️ Database Cleared',
+          description: `Deleted: ${result.deleted.profiles} users, ${result.deleted.alerts} alerts, ${result.deleted.locations} locations, ${result.deleted.notifications} notifications`,
+        });
+
+        // Reload data to reflect changes
+        setTimeout(() => loadData(), 1000);
+      } else {
+        throw new Error('Failed to clear database');
+      }
+    } catch (error) {
+      console.error('Clear database error:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to clear database',
         variant: 'destructive',
       });
     }
@@ -429,31 +502,43 @@ const AdminDashboard: React.FC = () => {
     }
 
     try {
-      // Create danger zone on blockchain instead of MongoDB
-      const { data } = await api.blockchainDangerZones.create({
-        name: newZone.name,
-        lat: parseFloat(newZone.lat),
-        lng: parseFloat(newZone.lng),
-        radius: parseFloat(newZone.radius),
-        level: newZone.level,
-        created_by: walletAddress || 'admin',
+      // Create danger zone on blockchain via API
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/blockchain/danger-zones`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: newZone.name,
+          lat: parseFloat(newZone.lat),
+          lng: parseFloat(newZone.lng),
+          radius: parseFloat(newZone.radius),
+          level: newZone.level,
+          created_by: walletAddress || 'admin',
+        }),
       });
 
-      if (data) {
-        setDangerZones(prev => [data, ...prev]);
+      const result = await response.json();
+
+      if (result.success) {
+        // Refresh danger zones from blockchain after creation
+        await loadData();
+
+        setNewZone({ name: '', lat: '', lng: '', radius: '', level: 'Medium' });
+        setShowAddZone(false);
+
+        toast({
+          title: 'Danger Zone Added to Blockchain',
+          description: `${newZone.name} has been stored on the blockchain.`,
+        });
+      } else {
+        throw new Error(result.error || 'Failed to add danger zone');
       }
-
-      setNewZone({ name: '', lat: '', lng: '', radius: '', level: 'Medium' });
-      setShowAddZone(false);
-
-      toast({
-        title: 'Danger Zone Added to Blockchain',
-        description: `${newZone.name} has been stored on the blockchain.`,
-      });
     } catch (error) {
+      console.error('Create error:', error);
       toast({
         title: 'Error',
-        description: 'Failed to add danger zone to blockchain.',
+        description: error instanceof Error ? error.message : 'Failed to add danger zone to blockchain.',
         variant: 'destructive',
       });
     }
@@ -560,29 +645,41 @@ const AdminDashboard: React.FC = () => {
       if (blockchainIndex === undefined) {
         toast({
           title: 'Error',
-          description: 'Cannot update MongoDB zones. Please use blockchain zones only.',
+          description: 'Cannot update: Blockchain index not available',
           variant: 'destructive',
         });
         return;
       }
 
-      await api.blockchainDangerZones.update(blockchainIndex, {
-        name: editZoneData.name,
-        radius: parseInt(editZoneData.radius),
-        level: editZoneData.level,
-        created_by: walletAddress || 'admin'
+      // Call API to update danger zone on blockchain
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/blockchain/danger-zones/${blockchainIndex}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: editZoneData.name,
+          radius: parseInt(editZoneData.radius),
+          level: editZoneData.level,
+        }),
       });
 
-      // Refresh danger zones from blockchain after update
-      await loadData();
+      const result = await response.json();
 
-      setShowEditZone(false);
-      setEditingZone(null);
+      if (result.success) {
+        // Refresh danger zones from blockchain after update
+        await loadData();
 
-      toast({
-        title: 'Zone Updated',
-        description: 'Danger zone has been updated on blockchain.',
-      });
+        setShowEditZone(false);
+        setEditingZone(null);
+
+        toast({
+          title: 'Zone Updated',
+          description: 'Danger zone has been updated on blockchain.',
+        });
+      } else {
+        throw new Error(result.error || 'Failed to update zone');
+      }
     } catch (error) {
       console.error('Update error:', error);
       toast({
@@ -625,43 +722,34 @@ const AdminDashboard: React.FC = () => {
     }
   };
 
-  // Registered tourists
-  const displayUsers = users.length > 0 ? users : Object.values(
-    alerts.reduce((acc, a) => {
-      const existing = acc[a.tourist_id];
-      const isNewer = !existing || new Date(a.created_at ?? 0) > new Date(existing.created_at ?? 0);
-      if (isNewer) {
-        acc[a.tourist_id] = {
-          id: a.tourist_id,
-          user_id: a.user_id,
-          tourist_id: a.tourist_id,
-          username: a.username ?? 'Unknown',
-          email: null,
-          phone: null,
-          dob: null,
-          wallet_address: null,
-          status: a.status ?? 'safe',
-          created_at: a.created_at,
-        } as Profile;
-      }
-      return acc;
-    }, {} as Record<string, Profile>)
-  );
+  // Registered tourists - Only show users from blockchain or MongoDB, NOT from alerts only
+  const displayUsers = users.length > 0 ? users : [];
 
   // Format locations for map
   const mapLocations = (() => {
-    const merged: Record<string, { touristId: string; username: string; lat: number; lng: number; status: 'safe' | 'alert' | 'danger' }> = {};
+    const merged: Record<string, { touristId: string; username: string; lat: number; lng: number; status: 'safe' | 'alert' | 'danger'; address?: string }> = {};
+
+    console.log('📍 Formatting map locations from userLocations:', userLocations.length);
 
     for (const loc of userLocations) {
+      if (!loc.lat || !loc.lng) {
+        console.log('⚠️ Skipping location without coordinates:', loc);
+        continue;
+      }
+      
       const profile = displayUsers.find(u => u.tourist_id === loc.tourist_id);
       const statusFromProfile = profile?.status as 'safe' | 'alert' | 'danger';
+      
       merged[loc.tourist_id] = {
         touristId: loc.tourist_id,
-        username: profile?.username || loc.tourist_id,
+        username: profile?.username || loc.username || loc.tourist_id,
         lat: loc.lat,
         lng: loc.lng,
+        address: loc.address,  // Include address for map display
         status: statusFromProfile || (loc.status || 'safe') as 'safe' | 'alert' | 'danger',
       };
+      
+      console.log('✅ Added user to map:', merged[loc.tourist_id]);
     }
 
     const latestAlertPerTourist: Record<string, Alert> = {};
@@ -686,7 +774,9 @@ const AdminDashboard: React.FC = () => {
       }
     }
 
-    return Object.values(merged);
+    const result = Object.values(merged);
+    console.log('🗺️ Total users on map:', result.length);
+    return result;
   })();
 
   // Stats
@@ -789,17 +879,70 @@ const AdminDashboard: React.FC = () => {
               Refresh
             </Button>
             <Button
+              onClick={handleClearDatabase}
+              variant="outline"
+              size="sm"
+              className="gap-2 text-destructive hover:text-destructive border-destructive/50"
+              title="Clear all MongoDB database"
+            >
+              <Eraser className="w-4 h-4" />
+              Clear DB
+            </Button>
+            <Button
+              onClick={async () => {
+                if (!confirm('⚠️ DELETE TEST USERS PERMANENTLY?\n\nThis will:\n- Delete ALL test users from MongoDB\n- Remove their locations\n- Delete their alerts and notifications\n- Remove their blockchain profiles\n\nThis action CANNOT be undone!\n\nContinue?')) {
+                  return;
+                }
+
+                try {
+                  const response = await fetch('http://localhost:3000/api/users/delete-test-users?confirm=true', {
+                    method: 'DELETE',
+                  });
+
+                  const result = await response.json();
+
+                  if (result.success) {
+                    toast({
+                      title: `🗑️ Deleted ${result.deleted} Test Users`,
+                      description: result.message,
+                      variant: 'default',
+                    });
+                    loadData(); // Reload data
+                  } else {
+                    toast({
+                      title: 'Error',
+                      description: result.error,
+                      variant: 'destructive',
+                    });
+                  }
+                } catch (error) {
+                  toast({
+                    title: 'Error',
+                    description: 'Failed to delete test users',
+                    variant: 'destructive',
+                  });
+                }
+              }}
+              variant="outline"
+              size="sm"
+              className="gap-2 text-destructive hover:text-destructive border-destructive/50"
+              title="Delete all test users permanently"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete Test Users
+            </Button>
+            <Button
               onClick={() => {
                 if (!confirm('⚠️ DELETE ALL LOCAL USERS?\n\nThis will:\n- Delete users from localStorage\n- Remove all locations\n- Clear all sessions\n\nBlockchain users will remain (permanent).\n\nContinue?')) {
                   return;
                 }
 
                 console.log('🗑️ Deleting all local users...\n');
-                
+
                 // Delete users from localStorage
                 localStorage.removeItem('users');
                 console.log('✅ Removed: users');
-                
+
                 // Remove all user locations
                 Object.keys(localStorage).forEach(key => {
                   if (key.startsWith('userLocation-')) {
@@ -807,25 +950,25 @@ const AdminDashboard: React.FC = () => {
                     console.log(`✅ Removed: ${key}`);
                   }
                 });
-                
+
                 // Clear current user
                 localStorage.removeItem('currentUser');
                 console.log('✅ Removed: currentUser');
-                
+
                 // Clear admin session
                 localStorage.removeItem('adminWalletAddress');
                 localStorage.removeItem('isAdmin');
                 console.log('✅ Removed: admin session');
-                
+
                 // Clear wallet
                 localStorage.removeItem('walletAddress');
                 console.log('✅ Removed: walletAddress');
-                
+
                 toast({
                   title: '🗑️ Users Deleted',
                   description: 'All local users deleted. Refreshing...',
                 });
-                
+
                 setTimeout(() => window.location.reload(), 1000);
               }}
               variant="outline"
@@ -913,7 +1056,7 @@ const AdminDashboard: React.FC = () => {
             </span>
           </h2>
           <div className="h-[400px] rounded-xl overflow-hidden">
-            <LeafletMap
+            <MapLibreMap
               dangerZones={mapDangerZones}
               userLocations={mapLocations}
               showDangerZones={true}
@@ -1034,17 +1177,20 @@ const AdminDashboard: React.FC = () => {
                   
                   // Find user's current location
                   const userLocation = userLocations.find(loc => loc.tourist_id === user.tourist_id);
-                  
+
+                  // Get address from location (reverse geocoding cached in location object)
+                  const displayAddress = userLocation?.address || `${userLocation?.lat.toFixed(4)}, ${userLocation?.lng.toFixed(4)}`;
+
                   // Check if user is in any danger zone
                   const isInDangerZone = dangerZones.some(zone => {
                     if (!userLocation) return false;
                     const distance = Math.sqrt(
-                      Math.pow(userLocation.lat - zone.lat, 2) + 
+                      Math.pow(userLocation.lat - zone.lat, 2) +
                       Math.pow(userLocation.lng - zone.lng, 2)
                     ) * 111000; // Convert to meters
                     return distance <= zone.radius;
                   });
-                  
+
                   return (
                     <div
                       key={user.user_id}
@@ -1064,9 +1210,9 @@ const AdminDashboard: React.FC = () => {
                               <p className="text-xs text-muted-foreground mt-0.5 truncate">📧 {user.email}</p>
                             )}
                             {userLocation && (
-                              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
-                                <MapPin className="w-3 h-3" />
-                                {userLocation.lat.toFixed(4)}, {userLocation.lng.toFixed(4)}
+                              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1 truncate" title={displayAddress}>
+                                <MapPin className="w-3 h-3 flex-shrink-0" />
+                                <span className="truncate">{displayAddress}</span>
                               </p>
                             )}
                             <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">

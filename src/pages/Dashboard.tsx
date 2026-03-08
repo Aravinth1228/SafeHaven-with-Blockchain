@@ -24,10 +24,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useWallet } from '@/contexts/WalletContext';
 import { useContract } from '@/hooks/useContract';
 import { useToast } from '@/hooks/use-toast';
-import LeafletMap from '@/components/LeafletMap';
+import MapLibreMap from '@/components/MapLibreMap';
 import { useDangerZoneDetection } from '@/hooks/useDangerZoneDetection';
 import { api } from '@/lib/api';
-import { useBlockchainLocationUpdate } from '@/hooks/useBlockchainLocationUpdate';
+import { useLocationUpdate } from '@/hooks/useBlockchainLocationUpdate';
+import { useBlockchainDangerZones } from '@/hooks/useBlockchainDangerZones';
 
 interface Notification {
   id: string;
@@ -40,20 +41,13 @@ interface Notification {
   created_at: string;
 }
 
-interface DangerZone {
-  id: string;
-  name: string;
-  lat: number;
-  lng: number;
-  radius: number;
-  level: string;
-}
-
 interface CurrentPlace {
   address?: string;
   city?: string;
   state?: string;
   country?: string;
+  lat?: number;
+  lng?: number;
 }
 
 // Calculate direction from user to danger zone
@@ -94,33 +88,84 @@ const Dashboard: React.FC = () => {
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [currentPlace, setCurrentPlace] = useState<CurrentPlace | null>(null);
   const [isTracking, setIsTracking] = useState(true);
-  const [dangerZones, setDangerZones] = useState<DangerZone[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+  const [lastLocationUpdate, setLastLocationUpdate] = useState<Date | null>(null);
+
+  // All users' locations for map display
+  const [allUsersLocations, setAllUsersLocations] = useState<Array<{
+    touristId: string;
+    username: string;
+    lat: number;
+    lng: number;
+    status: 'safe' | 'alert' | 'danger';
+  }>>([]);
 
   // Local status state
   const [status, setStatus] = useState<'safe' | 'alert' | 'danger'>('safe');
 
-  // Sync status from backend on mount
+  // Blockchain danger zones
+  const { zones: blockchainDangerZones, fetchDangerZones: fetchBlockchainZones } = useBlockchainDangerZones();
+  const [dangerZones, setDangerZones] = useState<Array<{ id: string; name: string; lat: number; lng: number; radius: number; level: 'low' | 'medium' | 'high' }>>([]);
+
+  // Fetch danger zones from blockchain on mount
   useEffect(() => {
-    const syncStatus = async () => {
-      if (!user?.touristId) return;
-      
+    const loadDangerZones = async () => {
+      const zones = await fetchBlockchainZones();
+      // Convert blockchain zones format to map format
+      const formattedZones = zones.map((zone: any) => ({
+        id: zone.zoneId || zone.id,
+        name: zone.name,
+        lat: zone.lat,
+        lng: zone.lng,
+        radius: zone.radius,
+        level: zone.level.toLowerCase() as 'low' | 'medium' | 'high',
+      }));
+      setDangerZones(formattedZones);
+    };
+
+    loadDangerZones();
+    
+    // Refresh danger zones every 30 seconds
+    const interval = setInterval(loadDangerZones, 30000);
+    return () => clearInterval(interval);
+  }, [fetchBlockchainZones]);
+
+  // Fetch all users' locations every 3 seconds for map display
+  useEffect(() => {
+    const fetchAllLocations = async () => {
       try {
-        const result = await api.users.getAll();
-        const currentUser = result.data?.find((u: any) => u.tourist_id === user.touristId);
-        
-        if (currentUser && currentUser.status !== status) {
-          setStatus(currentUser.status as 'safe' | 'alert' | 'danger');
+        const result = await api.locations.getAll();
+        if (result.data) {
+          // Convert to format expected by map
+          const locations = result.data.map((loc: any) => ({
+            touristId: loc.tourist_id,
+            username: loc.username || 'Unknown',
+            lat: loc.lat,
+            lng: loc.lng,
+            status: (loc.status || 'safe') as 'safe' | 'alert' | 'danger',
+          }));
+          console.log('📍 Fetched all user locations:', locations.length);
+          setAllUsersLocations(locations);
         }
       } catch (error) {
-        console.error('Error syncing status:', error);
+        if (import.meta.env.DEV) {
+          console.error('Error fetching all locations:', error);
+        }
       }
     };
-    
-    syncStatus();
-  }, [user?.touristId]);
+
+    // Fetch immediately
+    fetchAllLocations();
+
+    // Poll every 3 seconds for real-time updates
+    const interval = setInterval(fetchAllLocations, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Status is now managed locally by danger zone detection (no backend sync)
+  // This prevents conflicts between frontend auto-detection and backend status
 
   useEffect(() => {
     if (user?.status) {
@@ -128,33 +173,82 @@ const Dashboard: React.FC = () => {
     }
   }, [user?.status]);
 
-  // Send location to backend AND blockchain
-  useBlockchainLocationUpdate({
-    userId: user?.id || '',
-    touristId: user?.touristId || '',
-    status: status,
-    username: user?.username,
-    isInitialized,
-    initialize,
-  });
-
   const { nearestZone } = useDangerZoneDetection(
     location,
     user?.touristId || '',
     user?.username || '',
-    user?.id
+    user?.id,
+    dangerZones
   );
 
-  const loadDangerZones = useCallback(async () => {
-    try {
-      const result = await api.dangerZones.getAll();
-      if (result.data) {
-        setDangerZones(result.data);
+  // Check if user is inside a danger zone and update status automatically
+  useEffect(() => {
+    if (!location || dangerZones.length === 0) return;
+
+    const checkIfInDangerZone = () => {
+      for (const zone of dangerZones) {
+        // Calculate distance using Haversine formula
+        const R = 6371e3; // Earth's radius in meters
+        const φ1 = location.lat * Math.PI / 180;
+        const φ2 = zone.lat * Math.PI / 180;
+        const Δφ = (zone.lat - location.lat) * Math.PI / 180;
+        const Δλ = (zone.lng - location.lng) * Math.PI / 180;
+
+        const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                  Math.cos(φ1) * Math.cos(φ2) *
+                  Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        const distance = R * c;
+
+        // If user is inside the danger zone radius
+        if (distance <= zone.radius) {
+          console.log('🚨 User inside danger zone:', zone.name, 'Distance:', distance.toFixed(0) + 'm');
+
+          // AUTO-UPDATE status to danger if not already in danger/alert
+          if (status !== 'danger' && status !== 'alert') {
+            setStatus('danger');
+            toast({
+              title: '🚨 EMERGENCY!',
+              description: `You are inside "${zone.name}" DANGER ZONE! Your status has been automatically set to DANGER. Exit immediately!`,
+              variant: 'destructive',
+              duration: 10000,
+            });
+          }
+          return;
+        }
+
+        // If user is within 1.5x radius (approaching danger zone)
+        if (distance <= zone.radius * 1.5) {
+          console.log('⚠️ User approaching danger zone:', zone.name, 'Distance:', distance.toFixed(0) + 'm');
+
+          // AUTO-UPDATE status to alert if not already in danger/alert
+          if (status !== 'danger' && status !== 'alert') {
+            setStatus('alert');
+            toast({
+              title: '⚠️ WARNING!',
+              description: `You are approaching "${zone.name}" danger zone. Your status has been set to ALERT. Proceed with caution.`,
+              variant: 'default',
+              duration: 8000,
+            });
+          }
+          return;
+        }
       }
-    } catch (error) {
-      console.error('Error loading danger zones:', error);
-    }
-  }, []);
+
+      // User is not in or near any danger zone - auto reset to safe
+      if (status === 'danger' || status === 'alert') {
+        setStatus('safe');
+        console.log('✅ User is safe - outside all danger zones');
+        toast({
+          title: '✅ You are Safe!',
+          description: 'You have left the danger zone. Your status has been updated to SAFE.',
+          duration: 5000,
+        });
+      }
+    };
+
+    checkIfInDangerZone();
+  }, [location, dangerZones, status, toast]);
 
   const loadNotifications = useCallback(async () => {
     if (!user?.touristId) return;
@@ -173,15 +267,14 @@ const Dashboard: React.FC = () => {
   }, [isAuthenticated, navigate]);
 
   useEffect(() => {
-    loadDangerZones();
     loadNotifications();
-    
+
     // Poll for new notifications every 5 seconds
     const interval = setInterval(loadNotifications, 5000);
     return () => clearInterval(interval);
-  }, [loadDangerZones, loadNotifications]);
+  }, [loadNotifications]);
 
-  // Get current location
+  // Get current location with live tracking
   useEffect(() => {
     if (!navigator.geolocation) {
       toast({
@@ -192,44 +285,331 @@ const Dashboard: React.FC = () => {
       return;
     }
 
+    let watchId: number | null = null;
+    let lastLocationSent: { lat: number; lng: number; status: string; timestamp: number } | null = null;
+
+    const startTracking = () => {
+      watchId = navigator.geolocation.watchPosition(
+        async (pos) => {
+          const lat = pos.coords.latitude;
+          const lng = pos.coords.longitude;
+          const accuracy = pos.coords.accuracy;
+
+          setLocation({ lat, lng });
+          setLocationPermission('granted');
+
+          const now = Date.now();
+          
+          // Throttle location updates - send every 5 seconds OR if moved > 5 meters OR status changed
+          const timeSinceLastUpdate = now - (lastLocationSent?.timestamp || 0);
+          const distanceMoved = lastLocationSent ? 
+            Math.sqrt(
+              Math.pow((lat - lastLocationSent.lat) * 111000, 2) + 
+              Math.pow((lng - lastLocationSent.lng) * 111000 * Math.cos(lat * Math.PI / 180), 2)
+            ) : 999;
+          
+          const shouldSendLocation = !lastLocationSent ||
+            timeSinceLastUpdate > 5000 ||  // 5 seconds
+            distanceMoved > 5 ||  // 5 meters
+            status !== lastLocationSent.status;
+
+          // Send location to backend if tracking is enabled
+          if (isTracking && user?.id && user?.touristId && shouldSendLocation) {
+            try {
+              const locationData = {
+                user_id: user.id,
+                tourist_id: user.touristId,
+                lat: lat,
+                lng: lng,
+                username: user.username || 'Unknown',
+                status: status,
+              };
+
+              console.log('📍 Live location update:', { 
+                lat: lat.toFixed(6), 
+                lng: lng.toFixed(6), 
+                accuracy: `${Math.round(accuracy)}m`,
+                distanceMoved: `${Math.round(distanceMoved)}m`,
+                timeSinceLast: `${Math.round(timeSinceLastUpdate/1000)}s`,
+                status 
+              });
+
+              await api.locations.update(locationData);
+              lastLocationSent = { lat, lng, status, timestamp: now };
+              setLastLocationUpdate(new Date());
+              console.log('✅ Location sent to backend');
+            } catch (err) {
+              console.error('Failed to send live location:', err);
+            }
+          }
+
+          // Fetch place name using reverse geocoding (OpenStreetMap Nominatim)
+          // Only fetch if location changed significantly (reduce API calls)
+          if (!currentPlace || Math.abs(lat - (currentPlace.lat || 0)) > 0.001) {
+            try {
+              const response = await fetch(
+                `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`,
+                {
+                  headers: {
+                    'Accept-Language': 'en',
+                  },
+                  referrerPolicy: 'no-referrer',
+                  mode: 'cors'
+                }
+              );
+
+              if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+              }
+
+              const data = await response.json();
+
+              const fullAddress = [
+                data.address?.road,
+                data.address?.neighbourhood,
+                data.address?.suburb,
+                data.address?.city || data.address?.town || data.address?.village,
+                data.address?.state,
+                data.address?.postcode,
+                data.address?.country,
+              ].filter(Boolean).join(', ');
+
+              setCurrentPlace({
+                address: data.address?.road || data.address?.neighbourhood || '',
+                city: data.address?.city || data.address?.town || data.address?.village || '',
+                state: data.address?.state || '',
+                country: data.address?.country || '',
+                lat,
+                lng,
+              });
+
+              // Send address update to backend (only when address changes)
+              if (fullAddress && user?.id && user?.touristId && isTracking) {
+                await api.locations.update({
+                  user_id: user.id,
+                  tourist_id: user.touristId,
+                  lat: lat,
+                  lng: lng,
+                  username: user.username,
+                  status: status,
+                  address: fullAddress,
+                });
+                console.log('📍 Address update sent to backend:', fullAddress);
+              }
+            } catch (error) {
+              // Silently fail - CORS issues are common with Nominatim
+              if (import.meta.env.DEV) {
+                console.warn('Reverse geocoding failed (CORS or network issue):', error);
+              }
+              // Set a fallback currentPlace to prevent repeated failed requests
+              setCurrentPlace({
+                address: '',
+                city: '',
+                state: '',
+                country: 'Location available',
+                lat,
+                lng,
+              });
+            }
+          }
+        },
+        (err) => {
+          console.error('Location error:', err);
+          setLocationPermission('denied');
+
+          // Show user-friendly error messages
+          // DON'T set fallback location - wait for real GPS
+          if (err.code === err.TIMEOUT) {
+            toast({
+              title: 'Location Timeout',
+              description: 'GPS signal unavailable. Please wait, retrying...',
+              variant: 'default',
+              duration: 3000,
+            });
+            // Don't set fallback - keep trying to get real GPS
+          } else if (err.code === err.PERMISSION_DENIED) {
+            toast({
+              title: 'Location Access Denied',
+              description: 'Please enable location access in your browser settings.',
+              variant: 'destructive',
+              duration: 5000,
+            });
+            // Don't set fallback - user needs to enable permissions
+          } else if (err.code === err.POSITION_UNAVAILABLE) {
+            toast({
+              title: 'Location Unavailable',
+              description: 'GPS signal unavailable. Please wait...',
+              variant: 'default',
+              duration: 3000,
+            });
+            // Don't set fallback - keep trying
+          } else {
+            toast({
+              title: 'Location Error',
+              description: 'Unable to get your location. Retrying...',
+              variant: 'default',
+              duration: 3000,
+            });
+            // Don't set fallback - keep trying
+          }
+        },
+        {
+          enableHighAccuracy: true,  // Use GPS for better accuracy
+          timeout: 15000,  // 15 seconds timeout (longer for better GPS lock)
+          maximumAge: 5000  // Accept locations up to 5 seconds old (fresher updates)
+        }
+      );
+    };
+
+    // Get initial position with faster timeout
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        
+
         setLocation({ lat, lng });
         setLocationPermission('granted');
-        
-        // Fetch place name using reverse geocoding (OpenStreetMap Nominatim)
+
+        // Send initial location to backend immediately
+        if (user?.id && user?.touristId && isTracking) {
+          try {
+            await api.locations.update({
+              user_id: user.id,
+              tourist_id: user.touristId,
+              lat: lat,
+              lng: lng,
+              username: user.username,
+              status: status,
+            });
+            console.log('📍 Initial location sent to backend:', { lat, lng, status });
+          } catch (err) {
+            console.error('Failed to send initial location:', err);
+          }
+        }
+
+        // Fetch place name using reverse geocoding
         try {
           const response = await fetch(
             `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=10&addressdetails=1`,
-            { headers: { 'Accept-Language': 'en' } }
+            {
+              headers: {
+                'Accept-Language': 'en',
+              },
+              referrerPolicy: 'no-referrer',
+              mode: 'cors'
+            }
           );
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
           const data = await response.json();
-          
+
+          const fullAddress = [
+            data.address?.road,
+            data.address?.neighbourhood,
+            data.address?.suburb,
+            data.address?.city || data.address?.town || data.address?.village,
+            data.address?.state,
+            data.address?.postcode,
+            data.address?.country,
+          ].filter(Boolean).join(', ');
+
           setCurrentPlace({
             address: data.address?.road || data.address?.neighbourhood || '',
             city: data.address?.city || data.address?.town || data.address?.village || '',
             state: data.address?.state || '',
             country: data.address?.country || '',
+            lat,
+            lng,
           });
+
+          // Send address to backend after geocoding
+          if (user?.id && user?.touristId && isTracking && fullAddress) {
+            await api.locations.update({
+              user_id: user.id,
+              tourist_id: user.touristId,
+              lat: lat,
+              lng: lng,
+              username: user.username,
+              status: status,
+              address: fullAddress,
+            });
+            console.log('📍 Address sent to backend:', fullAddress);
+          }
         } catch (error) {
-          console.error('Error fetching place name:', error);
+          // Silently fail - CORS issues are common with Nominatim
+          if (import.meta.env.DEV) {
+            console.warn('Reverse geocoding failed (CORS or network issue):', error);
+          }
+          // Set a fallback currentPlace
+          setCurrentPlace({
+            address: '',
+            city: '',
+            state: '',
+            country: 'Location available',
+            lat,
+            lng,
+          });
         }
+
+        // Start live tracking after initial position
+        startTracking();
       },
       (err) => {
         console.error('Location error:', err);
         setLocationPermission('denied');
-        toast({
-          title: 'Location Access Denied',
-          description: 'Please enable location access for full functionality.',
-          variant: 'destructive',
-        });
+
+        // DON'T set fallback location - wait for real GPS
+        // Show user-friendly error messages
+        if (err.code === err.TIMEOUT) {
+          toast({
+            title: 'Location Timeout',
+            description: 'GPS signal unavailable. Please wait, retrying...',
+            variant: 'default',
+            duration: 3000,
+          });
+        } else if (err.code === err.PERMISSION_DENIED) {
+          toast({
+            title: 'Location Access Denied',
+            description: 'Please enable location access to use tracking features.',
+            variant: 'destructive',
+            duration: 5000,
+          });
+        } else if (err.code === err.POSITION_UNAVAILABLE) {
+          toast({
+            title: 'Location Unavailable',
+            description: 'GPS signal unavailable. Please wait...',
+            variant: 'default',
+            duration: 3000,
+          });
+        } else {
+          toast({
+            title: 'Location Error',
+            description: 'Unable to get your location. Retrying...',
+            variant: 'default',
+            duration: 3000,
+          });
+        }
+
+        // Start live tracking anyway (might get location later)
+        setTimeout(() => startTracking(), 2000);
       },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      {
+        enableHighAccuracy: true,  // Use GPS for better accuracy
+        timeout: 15000,  // 15 seconds timeout (longer for better GPS lock)
+        maximumAge: 5000  // Accept locations up to 5 seconds old (fresher updates)
+      }
     );
-  }, [toast]);
+
+    // Cleanup watch position on unmount
+    return () => {
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+      }
+    };
+  }, [toast, user?.id, user?.touristId, user?.username, isTracking, status]);
 
   const handleStatusChange = async (newStatus: 'safe' | 'alert' | 'danger') => {
     try {
@@ -295,15 +675,6 @@ const Dashboard: React.FC = () => {
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
-  const formatMapDangerZones = dangerZones.map(zone => ({
-    id: zone.id,
-    name: zone.name,
-    lat: zone.lat,
-    lng: zone.lng,
-    radius: zone.radius,
-    level: (zone.level as 'low' | 'medium' | 'high') || 'medium',
-  }));
-
   if (!location) {
     return (
       <div className="min-h-screen pt-20 pb-12 flex items-center justify-center">
@@ -337,6 +708,11 @@ const Dashboard: React.FC = () => {
                     </span>
                   ) : (
                     <span>Getting location...</span>
+                  )}
+                  {location && (
+                    <span className="text-xs font-mono ml-2 px-2 py-0.5 rounded bg-primary/10">
+                      {location.lat.toFixed(4)}, {location.lng.toFixed(4)}
+                    </span>
                   )}
                 </div>
               </div>
@@ -453,26 +829,38 @@ const Dashboard: React.FC = () => {
 
         {/* Live Tracking Map */}
         <div className="glass-card rounded-2xl p-6 mb-6">
-          <h2 className="font-display text-xl font-semibold mb-4 flex items-center gap-2">
-            <Navigation className="w-5 h-5 text-primary" />
-            Live Location Tracking
-            {isTracking && (
-              <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-success/20 text-success flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-                Live
-              </span>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-display text-xl font-semibold flex items-center gap-2">
+              <Navigation className="w-5 h-5 text-primary" />
+              Live Location Tracking
+              {isTracking && (
+                <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-success/20 text-success flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                  Live
+                </span>
+              )}
+            </h2>
+            {location && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-primary/10 border border-primary/20">
+                <MapPin className="w-3.5 h-3.5 text-primary" />
+                <span className="text-xs font-mono text-primary font-semibold">
+                  {location.lat.toFixed(6)}, {location.lng.toFixed(6)}
+                </span>
+                <span className="text-[10px] text-muted-foreground">±5m</span>
+              </div>
             )}
-          </h2>
+          </div>
           <div className="h-[400px] rounded-xl overflow-hidden">
-            <LeafletMap
-              dangerZones={formatMapDangerZones}
+            <MapLibreMap
+              dangerZones={dangerZones}  // Show danger zones from blockchain
+              userLocations={allUsersLocations.filter(loc => loc.touristId !== user?.touristId)}  // Show other users
               currentUserLocation={{
                 lat: location.lat,
                 lng: location.lng,
                 status: status,
               }}
-              showDangerZones={true}
-              showUserMarkers={false}
+              showDangerZones={true}  // Enable danger zones display
+              showUserMarkers={true}  // Show other users
               isAdmin={false}
             />
           </div>
@@ -514,9 +902,25 @@ const Dashboard: React.FC = () => {
               </div>
               <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
                 <span className="text-sm text-muted-foreground">Location Sharing</span>
-                <span className={`font-semibold ${isTracking ? 'text-success' : 'text-muted-foreground'}`}>
-                  {isTracking ? 'Active' : 'Paused'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1">
+                    <Radio className={`w-3 h-3 ${isTracking ? 'text-success animate-pulse' : 'text-muted-foreground'}`} />
+                    <span className={`font-semibold text-xs ${isTracking ? 'text-success' : 'text-muted-foreground'}`}>
+                      {isTracking ? 'Active' : 'Paused'}
+                    </span>
+                  </div>
+                  {lastLocationUpdate && isTracking && (
+                    <span className="text-xs text-muted-foreground" title={lastLocationUpdate.toLocaleTimeString()}>
+                      {(() => {
+                        const seconds = Math.floor((Date.now() - lastLocationUpdate.getTime()) / 1000);
+                        if (seconds < 5) return 'Just now';
+                        if (seconds < 60) return `${seconds}s ago`;
+                        const mins = Math.floor(seconds / 60);
+                        return `${mins}m ago`;
+                      })()}
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
                 <span className="text-sm text-muted-foreground">Status</span>

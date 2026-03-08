@@ -8,6 +8,7 @@ import { useWallet } from '@/contexts/WalletContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useBlockchain } from '@/hooks/useBlockchain';
 import MetaMaskGuide from '@/components/MetaMaskGuide';
+import AddSepoliaButton from '@/components/blockchain/AddSepoliaButton';
 import { useToast } from '@/hooks/use-toast';
 
 const SignUp: React.FC = () => {
@@ -15,7 +16,7 @@ const SignUp: React.FC = () => {
   const { toast } = useToast();
   const { isMetaMaskInstalled, connectWallet, isConnected, walletAddress, isConnecting } = useWallet();
   const { register } = useAuth();
-  const { signAndRegister } = useBlockchain();
+  const { signAndRegister, checkRegistration } = useBlockchain();
 
   const [step, setStep] = useState<'connect' | 'form'>('connect');
   const [formData, setFormData] = useState({
@@ -141,6 +142,36 @@ const SignUp: React.FC = () => {
       return;
     }
 
+    // Date of Birth Validation - User must be at least 18 years old
+    const dob = new Date(formData.dob);
+    const today = new Date();
+    let age = today.getFullYear() - dob.getFullYear();
+    const monthDiff = today.getMonth() - dob.getMonth();
+    const dayDiff = today.getDate() - dob.getDate();
+    
+    // Adjust age if birthday hasn't occurred this year
+    if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) {
+      age--;
+    }
+    
+    if (age < 18) {
+      toast({
+        title: 'Invalid Date of Birth',
+        description: `You must be at least 18 years old to register. Current age: ${age} years.`,
+        variant: 'destructive',
+      });
+      return;
+    }
+    
+    if (age > 120) {
+      toast({
+        title: 'Invalid Date of Birth',
+        description: 'Please enter a valid date of birth.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (!walletAddress) {
       toast({
         title: 'Wallet Not Connected',
@@ -155,8 +186,58 @@ const SignUp: React.FC = () => {
     try {
       console.log('🚀 Starting registration...');
       console.log('Wallet:', walletAddress);
-      
-      // Register user in database
+
+      // Step 1: Check if already registered on blockchain
+      toast({
+        title: 'Checking Registration',
+        description: 'Verifying if wallet is already registered...',
+      });
+
+      const isAlreadyRegistered = await checkRegistration();
+
+      if (isAlreadyRegistered) {
+        toast({
+          title: 'Already Registered!',
+          description: 'This wallet is already registered. Please login.',
+          variant: 'destructive',
+        });
+        setIsSubmitting(false);
+        setTimeout(() => {
+          navigate('/login');
+        }, 2000);
+        return;
+      }
+
+      // Step 2: Register on blockchain with ERC-2771 meta-transaction (NO GAS FEE)
+      toast({
+        title: 'Sign Registration',
+        description: 'Please sign the message in MetaMask to register on blockchain',
+      });
+
+      const dateOfBirth = new Date(formData.dob);
+      const dateOfBirthTimestamp = Math.floor(dateOfBirth.getTime() / 1000);
+
+      // Register on blockchain using ERC-2771 meta-transaction
+      const blockchainResult = await signAndRegister({
+        username: formData.username,
+        email: formData.email,
+        phone: formData.phone,
+        dateOfBirth: dateOfBirthTimestamp
+      });
+
+      console.log('✅ Blockchain registration successful:', blockchainResult);
+
+      toast({
+        title: '✅ Blockchain Registration Successful!',
+        description: `Tourist ID: ${blockchainResult.data?.touristId || 'N/A'}`,
+      });
+
+      // Step 3: Register user in MongoDB (for faster queries and additional data)
+      toast({
+        title: 'Creating Profile',
+        description: 'Saving your profile to database...',
+      });
+
       const success = await register(
         {
           username: formData.username,
@@ -164,33 +245,91 @@ const SignUp: React.FC = () => {
           phone: formData.phone,
           dob: formData.dob,
           walletAddress: walletAddress,
+          touristId: blockchainResult.data?.touristId || '',
         },
         formData.password
       );
 
       if (!success) {
         toast({
-          title: 'Registration Failed',
-          description: 'Username or wallet address already registered. Please try another.',
-          variant: 'destructive',
+          title: 'Database Registration Warning',
+          description: 'Blockchain registration succeeded but database registration failed. You can still login.',
+          variant: 'default',
         });
-        setIsSubmitting(false);
-        return;
+        // Still redirect even if MongoDB fails - blockchain is the source of truth
       }
 
-      // Auto-redirect to dashboard
+      // Auto-redirect to dashboard immediately
       toast({
-        title: 'Registration Successful!',
-        description: 'Redirecting to dashboard...',
+        title: '🎉 Registration Successful!',
+        description: 'Welcome to SafeHaven!',
       });
+
+      // Redirect immediately without waiting for location
       setTimeout(() => {
         navigate('/dashboard');
-      }, 1000);
+      }, 500);
+
+      // Capture location in background (non-blocking)
+      if ('geolocation' in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+            const { latitude, longitude } = position.coords;
+            console.log('📍 Capturing initial location:', { latitude, longitude });
+
+            // Get the newly registered user
+            const currentUser = localStorage.getItem('currentUser');
+            if (currentUser) {
+              const user = JSON.parse(currentUser);
+              try {
+                // Send initial location to backend
+                await fetch('http://localhost:3000/api/locations', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    user_id: user.id,
+                    tourist_id: user.touristId,
+                    lat: latitude,
+                    lng: longitude,
+                    username: user.username,
+                    status: 'safe',
+                  }),
+                });
+                console.log('✅ Initial location saved to backend');
+              } catch (err) {
+                console.error('Failed to save initial location:', err);
+              }
+            }
+          },
+          (error) => {
+            console.log('⚠️ Location permission denied or unavailable:', error.message);
+          },
+          {
+            enableHighAccuracy: false,
+            timeout: 5000,
+            maximumAge: 0,
+          }
+        );
+      }
     } catch (error: any) {
       console.error('Registration error:', error);
+
+      let errorMessage = error.message || 'Something went wrong. Please try again.';
+
+      // Handle specific error types
+      if (error.message?.includes('Already registered')) {
+        errorMessage = 'Wallet already registered on blockchain. Please login.';
+      } else if (error.message?.includes('Signature expired')) {
+        errorMessage = 'Signature expired. Please try again.';
+      } else if (error.message?.includes('User rejected')) {
+        errorMessage = 'You rejected the signature. Please sign to complete registration.';
+      } else if (error.message?.includes('Failed to fetch')) {
+        errorMessage = 'Cannot connect to backend server. Please ensure the server is running.';
+      }
+
       toast({
         title: 'Registration Failed',
-        description: error.message || 'Something went wrong. Please try again.',
+        description: errorMessage,
         variant: 'destructive',
       });
       setIsSubmitting(false);
@@ -265,6 +404,15 @@ const SignUp: React.FC = () => {
             <p className="text-muted-foreground mb-8">
               Connect your MetaMask wallet to create a blockchain-verified tourist identity.
             </p>
+            
+            {/* Network Status */}
+            <div className="mb-6 p-4 rounded-xl bg-muted/50 border border-border">
+              <p className="text-sm text-muted-foreground mb-3">
+                ⚠️ Make sure you're on <strong className="text-primary">Sepolia Testnet</strong>
+              </p>
+              <AddSepoliaButton />
+            </div>
+            
             <Button
               className="btn-gradient px-8 py-4 rounded-xl w-full"
               onClick={handleConnect}
@@ -358,8 +506,13 @@ const SignUp: React.FC = () => {
                   value={formData.dob}
                   onChange={handleInputChange}
                   required
+                  max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split('T')[0]}
+                  title="You must be at least 18 years old to register"
                   className="bg-muted/50 border-border"
                 />
+                <p className="text-xs text-muted-foreground mt-1">
+                  ℹ️ You must be at least 18 years old to register
+                </p>
               </div>
 
               <div>

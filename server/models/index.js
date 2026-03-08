@@ -7,6 +7,7 @@ const profileSchema = new mongoose.Schema({
   email: String,
   phone: String,
   dob: String,
+  password: { type: String, required: true },  // Password for login
   wallet_address: String,
   status: { type: String, enum: ['safe', 'alert', 'danger'], default: 'safe' },
   blockchain_registered: { type: Boolean, default: false },
@@ -69,8 +70,10 @@ dangerZoneSchema.set('toObject', { virtuals: true });
 const userLocationSchema = new mongoose.Schema({
   user_id: { type: String, required: true },
   tourist_id: { type: String, required: true },
+  username: String,
   lat: Number,
   lng: Number,
+  address: String,  // Full address from reverse geocoding
   status: { type: String, enum: ['safe', 'alert', 'danger'], default: 'safe' },
   updated_at: { type: Date, default: Date.now }
 });

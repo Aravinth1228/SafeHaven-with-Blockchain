@@ -153,15 +153,17 @@ const LeafletMap: React.FC<Props> = ({
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
-    // Initialize map
+    // Initialize map with user's location if available
     const defaultCenter = currentUserLocation
       ? [currentUserLocation.lat, currentUserLocation.lng]
       : [20.5937, 78.9629]; // India center
-    const defaultZoom = currentUserLocation ? 15 : 5;
+    const defaultZoom = currentUserLocation ? 16 : 5; // Higher zoom for accuracy
 
     mapRef.current = L.map(containerRef.current, {
       zoomControl: true,
       attributionControl: true,
+      zoomAnimation: true,
+      fadeAnimation: true,
     }).setView(defaultCenter, defaultZoom);
 
     // Add OpenStreetMap tiles (dark theme alternative using CartoDB Dark Matter)
@@ -169,6 +171,7 @@ const LeafletMap: React.FC<Props> = ({
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
       subdomains: 'abcd',
       maxZoom: 20,
+      minZoom: 3,
     }).addTo(mapRef.current);
 
     return () => {
@@ -182,8 +185,10 @@ const LeafletMap: React.FC<Props> = ({
     const map = mapRef.current;
     if (!map || !currentUserLocation) return;
 
-    map.flyTo([currentUserLocation.lat, currentUserLocation.lng], 15, {
-      duration: 2,
+    // Smooth fly to user location with higher zoom for accuracy
+    map.flyTo([currentUserLocation.lat, currentUserLocation.lng], 16, {
+      duration: 1.5,
+      animate: true,
     });
   }, [currentUserLocation]);
 
@@ -317,30 +322,58 @@ const LeafletMap: React.FC<Props> = ({
       });
     }
 
-    // Current user marker
+    // Current user marker with high accuracy indicator
     if (currentUserLocation) {
       const userStatus = currentUserLocation.status || 'safe';
       const icon = createDotIcon(userStatus);
-      const marker = L.marker([currentUserLocation.lat, currentUserLocation.lng], { icon }).addTo(map);
+      const marker = L.marker([currentUserLocation.lat, currentUserLocation.lng], { 
+        icon,
+        zIndexOffset: 1000 // Ensure user marker is always on top
+      }).addTo(map);
 
       marker.bindPopup(`
-        <div style="font-family: 'Inter', sans-serif; padding: 8px; background: rgba(10,10,20,0.95); border-radius: 12px; border: 1.5px solid ${STATUS_CONFIG[userStatus]?.color}; min-width: 180px;">
-          <div style="display: flex; align-items: center; gap: 8px;">
+        <div style="font-family: 'Inter', sans-serif; padding: 12px; background: rgba(10,10,20,0.98); border-radius: 12px; border: 2px solid ${STATUS_CONFIG[userStatus]?.color}; min-width: 200px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
             <div style="
-              width: 12px;
-              height: 12px;
+              width: 14px;
+              height: 14px;
               border-radius: 50%;
               background: ${STATUS_CONFIG[userStatus]?.color};
-              box-shadow: 0 0 8px ${STATUS_CONFIG[userStatus]?.color};
+              box-shadow: 0 0 12px ${STATUS_CONFIG[userStatus]?.color};
               animation: leaflet-pulse 1s ease-in-out infinite;
             "></div>
-            <strong style="color: #fff; font-size: 13px;">${STATUS_CONFIG[userStatus]?.emoji} ${STATUS_CONFIG[userStatus]?.label}</strong>
+            <strong style="color: #fff; font-size: 14px; font-weight: 800;">${STATUS_CONFIG[userStatus]?.emoji} ${STATUS_CONFIG[userStatus]?.label}</strong>
+            <span style="
+              font-size: 9px;
+              padding: 2px 6px;
+              border-radius: 4px;
+              background: ${STATUS_CONFIG[userStatus]?.color};
+              color: #fff;
+              font-weight: 700;
+              letter-spacing: 0.5px;
+            ">LIVE</span>
           </div>
-          <div style="font-size: 11px; color: #888; margin-top: 4px; font-family: monospace;">
-            ${currentUserLocation.lat.toFixed(5)}, ${currentUserLocation.lng.toFixed(5)}
+          <div style="
+            background: rgba(255,255,255,0.05);
+            border-radius: 8px;
+            padding: 8px;
+            margin-top: 8px;
+          ">
+            <div style="font-size: 10px; color: #888; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px;">Your Location</div>
+            <div style="font-size: 13px; color: ${STATUS_CONFIG[userStatus]?.color}; font-family: 'Courier New', monospace; font-weight: 700;">
+              📍 ${currentUserLocation.lat.toFixed(6)}, ${currentUserLocation.lng.toFixed(6)}
+            </div>
+            <div style="font-size: 9px; color: #666; margin-top: 4px;">
+              Accuracy: High (GPS)
+            </div>
           </div>
         </div>
       `);
+
+      // Auto-open popup on first load
+      setTimeout(() => {
+        marker.openPopup();
+      }, 500);
 
       markersRef.current.push(marker);
     }

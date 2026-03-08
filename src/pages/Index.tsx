@@ -1,16 +1,17 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { 
-  Shield, 
-  Wallet, 
-  MapPin, 
-  AlertTriangle, 
-  Users, 
+import {
+  Shield,
+  Wallet,
+  MapPin,
+  AlertTriangle,
+  Users,
   CheckCircle,
   ArrowRight,
   Zap,
   Lock,
-  Globe
+  Globe,
+  Download
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useWallet } from '@/contexts/WalletContext';
@@ -90,7 +91,7 @@ const Index: React.FC = () => {
 
             {/* Subtitle */}
             <p className="text-lg md:text-xl text-muted-foreground mb-10 max-w-2xl mx-auto">
-              Protect yourself with blockchain-verified identity, real-time location tracking, 
+              Protect yourself with blockchain-verified identity, real-time location tracking,
               and instant emergency alerts. Your safety is our priority.
             </p>
 
@@ -102,7 +103,7 @@ const Index: React.FC = () => {
                   <ArrowRight className="w-5 h-5 ml-2" />
                 </Button>
               </Link>
-              
+
               {isMetaMaskInstalled ? (
                 <Button
                   className="btn-outline-gradient px-8 py-6 text-lg rounded-xl min-w-[200px]"
@@ -172,7 +173,7 @@ const Index: React.FC = () => {
                 </div>
                 <h3 className="font-display text-xl font-semibold mb-2">{item.title}</h3>
                 <p className="text-muted-foreground text-sm">{item.description}</p>
-                
+
                 {index < howItWorks.length - 1 && (
                   <div className="hidden lg:block absolute top-8 right-0 translate-x-1/2 text-primary/30">
                     <ArrowRight className="w-8 h-8" />
@@ -185,13 +186,84 @@ const Index: React.FC = () => {
       </section>
 
       {/* MetaMask Installation Guide */}
-      {!isMetaMaskInstalled && (
-        <section className="py-20">
-          <div className="container mx-auto px-4 max-w-2xl">
-            <MetaMaskGuide />
+      <section className="py-20 bg-muted/10">
+        <div className="container mx-auto px-4">
+          <div className="text-center mb-12">
+            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border bg-primary/10 mb-4">
+              <Wallet className="w-4 h-4 text-primary" />
+              <span className="text-sm text-primary font-medium">Get Started with MetaMask</span>
+            </div>
+            <h2 className="font-display text-3xl md:text-4xl font-bold mb-4">
+              Connect Your <span className="gradient-text">Wallet</span>
+            </h2>
+            <p className="text-muted-foreground max-w-2xl mx-auto">
+              MetaMask is required to create your blockchain-verified tourist identity
+            </p>
           </div>
-        </section>
-      )}
+          
+          <div className="grid lg:grid-cols-2 gap-8 max-w-6xl mx-auto">
+            {/* Connection Status Card */}
+            <div className="glass-card rounded-2xl p-8">
+              <h3 className="font-display text-xl font-bold mb-6 flex items-center gap-2">
+                <Shield className="w-6 h-6 text-primary" />
+                Connection Status
+              </h3>
+              
+              <div className="space-y-4">
+                <div className={`p-4 rounded-xl border ${isConnected ? 'bg-green-500/10 border-green-500/30' : 'bg-muted/30 border-border'}`}>
+                  <div className="flex items-center gap-3">
+                    {isConnected ? (
+                      <CheckCircle className="w-6 h-6 text-green-500" />
+                    ) : (
+                      <AlertTriangle className="w-6 h-6 text-muted-foreground" />
+                    )}
+                    <div>
+                      <p className={`font-semibold ${isConnected ? 'text-green-500' : 'text-muted-foreground'}`}>
+                        {isConnected ? 'Wallet Connected' : 'Wallet Not Connected'}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        {isConnected ? 'Ready to use SafeHaven' : 'Connect MetaMask to continue'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {isMetaMaskInstalled ? (
+                  <Button
+                    className="btn-gradient px-6 py-4 rounded-xl w-full text-lg"
+                    onClick={connectWallet}
+                    disabled={isConnecting || isConnected}
+                  >
+                    <Wallet className="w-5 h-5 mr-2" />
+                    {isConnected ? 'Connected' : isConnecting ? 'Connecting...' : 'Connect MetaMask'}
+                  </Button>
+                ) : (
+                  <Button
+                    className="btn-gradient px-6 py-4 rounded-xl w-full text-lg"
+                    onClick={() => window.open('https://metamask.io/download/', '_blank')}
+                  >
+                    <Download className="w-5 h-5 mr-2" />
+                    Install MetaMask
+                  </Button>
+                )}
+
+                {isConnected && (
+                  <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/30">
+                    <p className="text-sm text-green-500 text-center">
+                      ✅ You can now create your tourist profile!
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Installation Guide */}
+            <div>
+              <MetaMaskGuide />
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* Security Features */}
       <section className="py-20">
@@ -199,21 +271,21 @@ const Index: React.FC = () => {
           <div className="glass-card rounded-3xl p-8 md:p-12">
             <div className="grid md:grid-cols-3 gap-8">
               <div className="text-center">
-                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4 text-primary">
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4 text-primary">
                   <Lock className="w-8 h-8" />
                 </div>
                 <h3 className="font-display text-xl font-semibold mb-2">Blockchain Security</h3>
                 <p className="text-muted-foreground text-sm">Immutable tourist ID linked to your wallet</p>
               </div>
               <div className="text-center">
-                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4 text-primary">
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4 text-primary">
                   <Zap className="w-8 h-8" />
                 </div>
                 <h3 className="font-display text-xl font-semibold mb-2">Instant Response</h3>
                 <p className="text-muted-foreground text-sm">Emergency alerts reach admins in seconds</p>
               </div>
               <div className="text-center">
-                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-4 text-primary">
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4 text-primary">
                   <Globe className="w-8 h-8" />
                 </div>
                 <h3 className="font-display text-xl font-semibold mb-2">Global Coverage</h3>

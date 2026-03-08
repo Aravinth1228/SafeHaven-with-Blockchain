@@ -21,7 +21,7 @@ contract TrustedForwarder is ERC2771Forwarder, ReentrancyGuard {
         _;
     }
 
-    constructor() ERC2771Forwarder("SafeHeaven Trusted Forwarder") {
+    constructor() ERC2771Forwarder("ERC2771Forwarder") {
         owner = msg.sender;
     }
 

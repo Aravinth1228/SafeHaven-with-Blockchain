@@ -5,7 +5,7 @@ async function main() {
   console.log("🔐 Adding Admin to TouristSafetyERC2771...\n");
 
   // Contract address
-  const TOURIST_SAFETY_ADDRESS = "0xa2FEcd68ebB27d53eF9224C06B81a427C2F303ce";
+  const TOURIST_SAFETY_ADDRESS = "0xc8d3f4B811C3C808965259f839E1BEc48c9156b9";
 
   // Get the deployer/owner account
   const [owner] = await ethers.getSigners();
@@ -20,7 +20,7 @@ async function main() {
   const touristSafety = TouristSafety.attach(TOURIST_SAFETY_ADDRESS);
 
   // Check current admin status
-  const newAdminAddress = "0x548cb269df02005590cf48fb031dd697e52aa201"; // Your current wallet
+  const newAdminAddress = "0x1e6d7be40C13417BC96a12A7e38d5662d31aB034"; // Your current wallet
   console.log("👤 Admin to add:", newAdminAddress);
 
   const isAdminBefore = await touristSafety.isAdmin(newAdminAddress);

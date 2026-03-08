@@ -8,8 +8,14 @@ import "@openzeppelin/contracts/metatx/ERC2771Context.sol";
  * @author Tourist Safety System
  * @notice ERC-2771 compatible smart contract for managing tourist identity, safety status, and emergency alerts
  * @dev This contract uses ERC-2771 for gasless meta-transactions
- *      Users sign messages with MetaMask, backend relayer submits transactions
+ *      Users sign messages with MetaMask (no gas fee), backend relayer submits transactions
  *      The contract can identify the real user via _msgSender() instead of msg.sender
+ *      
+ * How it works:
+ * 1. User signs EIP-712 message with MetaMask (NO GAS FEE)
+ * 2. Backend relayer submits transaction via ERC2771Forwarder.execute()
+ * 3. Forwarder verifies signature and executes the call
+ * 4. Contract uses _msgSender() to get the real user address
  */
 contract TouristSafetyERC2771 is ERC2771Context {
 
@@ -213,7 +219,7 @@ contract TouristSafetyERC2771 is ERC2771Context {
     // ============ Tourist Registration ============
 
     /**
-     * @notice Register a new tourist
+     * @notice Register a new tourist (direct transaction - pays gas)
      * @param _username Tourist's display name
      * @param _email Tourist's email address
      * @param _phone Tourist's phone number

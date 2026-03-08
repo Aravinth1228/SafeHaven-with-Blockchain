@@ -5,9 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js",
-    "clear-db": "node clear-db.js",
-    "drop-db": "node drop-database.js"
+    "dev": "nodemon --config nodemon.json index.js",
+    "clear-db": "node scripts/clear-db.js",
+    "drop-db": "node scripts/drop-database.js",
+    "test": "node tests/test-forwarder.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

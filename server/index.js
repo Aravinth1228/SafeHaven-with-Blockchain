@@ -3,12 +3,53 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
+const http = require('http');
+const { Server } = require('socket.io');
 
 dotenv.config();
 
 const app = express();
+const server = http.createServer(app); // Create HTTP server
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/safehaven';
+
+// Socket.IO Setup - Real-time location tracking
+const io = new Server(server, {
+  cors: {
+    origin: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'],
+    methods: ['GET', 'POST'],
+    credentials: true
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000
+});
+
+// Store connected clients
+const connectedClients = new Map();
+
+io.on('connection', (socket) => {
+  console.log('🔌 Client connected:', socket.id);
+  
+  // Join admin room for real-time updates
+  socket.on('join-admin', () => {
+    socket.join('admin-room');
+    console.log('📊 Admin joined real-time updates');
+  });
+  
+  // Join user room (for receiving their own updates)
+  socket.on('join-user', (touristId) => {
+    socket.join(`user-${touristId}`);
+    console.log(`👤 User ${touristId} joined their room`);
+  });
+  
+  // Handle disconnect
+  socket.on('disconnect', () => {
+    console.log('🔌 Client disconnected:', socket.id);
+  });
+});
+
+// Export io for use in routes
+module.exports.io = io;
 
 // Middleware
 app.use(cors());
@@ -92,20 +133,20 @@ app.patch('/api/users/:userId/status', async (req, res) => {
     const { status } = req.body;
     const userId = req.params.userId;
 
-    // Try to find by user_id first, then by wallet_address
-    let user = await Profile.findOne({ user_id: userId });
+    // Try to find by tourist_id first (most reliable)
+    let user = await Profile.findOne({
+      tourist_id: { $regex: new RegExp(`^${userId}$`, 'i') }
+    });
 
-    // If not found, try searching by wallet address (case-insensitive)
+    // If not found, try searching by user_id
+    if (!user) {
+      user = await Profile.findOne({ user_id: userId });
+    }
+
+    // If still not found, try searching by wallet address (case-insensitive)
     if (!user) {
       user = await Profile.findOne({
         wallet_address: { $regex: new RegExp(`^${userId}$`, 'i') }
-      });
-    }
-
-    // If still not found, try searching by tourist_id (case-insensitive)
-    if (!user) {
-      user = await Profile.findOne({
-        tourist_id: { $regex: new RegExp(`^${userId}$`, 'i') }
       });
     }
 
@@ -113,23 +154,30 @@ app.patch('/api/users/:userId/status', async (req, res) => {
       return res.status(404).json({ success: false, error: 'User not found' });
     }
 
-    user.status = status;
-    user.updated_at = new Date();
-    await user.save();
+    // Update only the status field (avoid validation errors)
+    const updatedUser = await Profile.findByIdAndUpdate(
+      user._id,
+      {
+        status: status,
+        updated_at: new Date()
+      },
+      { new: true, runValidators: false }
+    );
 
     // Create alert if status is alert/danger
     if (status === 'alert' || status === 'danger') {
       await Alert.create({
-        user_id: user.user_id,
-        tourist_id: user.tourist_id,
-        username: user.username,
+        user_id: updatedUser.user_id,
+        tourist_id: updatedUser.tourist_id,
+        username: updatedUser.username,
         status: status,
         alert_type: 'status_change',
       });
     }
 
-    res.json({ success: true, data: user });
+    res.json({ success: true, data: updatedUser });
   } catch (error) {
+    console.error('Error updating status:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -372,7 +420,24 @@ app.patch('/api/alerts/:alertId/dismiss', async (req, res) => {
 // Update user location
 app.post('/api/locations', async (req, res) => {
   try {
-    const { user_id, tourist_id, lat, lng, username, status } = req.body;
+    const { user_id, tourist_id, lat, lng, username, status, address } = req.body;
+
+    console.log('📍 Location update received:', {
+      user_id,
+      tourist_id,
+      lat,
+      lng,
+      username: username || 'NOT_PROVIDED',
+      status,
+      address: address || 'NOT_PROVIDED'
+    });
+    
+    // Log if location looks like Chennai (debugging)
+    if (Math.abs(lat - 13.0827) < 0.1 && Math.abs(lng - 80.2707) < 0.1) {
+      console.log('⚠️ WARNING: Location appears to be Chennai (fake location detected)');
+    } else {
+      console.log('✅ Real GPS location detected:', lat.toFixed(6), lng.toFixed(6));
+    }
 
     // Upsert location
     let location = await UserLocation.findOne({ user_id });
@@ -380,13 +445,23 @@ app.post('/api/locations', async (req, res) => {
       location.lat = lat;
       location.lng = lng;
       if (status) location.status = status;
+      if (address) location.address = address;  // Save address
       location.updated_at = new Date();
       await location.save();
     } else {
-      location = await UserLocation.create({ user_id, tourist_id, lat, lng, status: status || 'safe' });
+      location = await UserLocation.create({
+        user_id,
+        tourist_id,
+        lat,
+        lng,
+        username: username || 'Unknown',
+        address: address || '',  // Save address
+        status: status || 'safe'
+      });
     }
 
-    // Update profile status if provided
+    // Update profile status ONLY if explicitly provided from frontend
+    // Don't auto-change status based on danger zones - let frontend handle it
     if (status) {
       await Profile.findOneAndUpdate(
         { user_id },
@@ -394,13 +469,52 @@ app.post('/api/locations', async (req, res) => {
       );
     }
 
+    // 🚀 EMIT REAL-TIME LOCATION UPDATE VIA SOCKET.IO
+    const locationData = {
+      user_id,
+      tourist_id,
+      lat,
+      lng,
+      username: username || 'Unknown',
+      address: address || '',  // Include address
+      status: status || 'safe',
+      updated_at: new Date().toISOString()
+    };
+
+    // Emit to all admins in admin-room
+    io.to('admin-room').emit('location-update', locationData);
+    console.log('📡 Emitted location update to admin-room:', locationData.username, locationData.address);
+
+    // Emit to the user themselves
+    io.to(`user-${tourist_id}`).emit('my-location-update', locationData);
+
+    // Fetch danger zones from blockchain via API
+    let zones = [];
+    try {
+      const blockchainResponse = await fetch('http://localhost:3000/api/blockchain/danger-zones', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      const blockchainData = await blockchainResponse.json();
+      if (blockchainData.success) {
+        zones = blockchainData.data || [];
+      }
+    } catch (error) {
+      console.warn('⚠️ Could not fetch danger zones from blockchain:', error.message);
+    }
+
+    // Track if user is in any danger zone or near any zone
+    let isInAnyDangerZone = false;
+    let isNearAnyDangerZone = false;
+
     // Check if user is in danger zone OR nearby (within 200m)
-    const zones = await DangerZone.find();
     for (const zone of zones) {
       const distance = calculateDistance(lat, lng, zone.lat, zone.lng);
-      
-      // User entered danger zone
+
+      // User entered danger zone (INSIDE the radius)
       if (distance <= zone.radius) {
+        isInAnyDangerZone = true;
+
         // Check if alert already exists for this zone entry
         const existingAlert = await Alert.findOne({
           user_id,
@@ -410,12 +524,12 @@ app.post('/api/locations', async (req, res) => {
         });
 
         if (!existingAlert) {
-          // Create alert
+          // Create alert ONLY (don't auto-change status)
           await Alert.create({
             user_id,
             tourist_id,
             username: username || 'Unknown',
-            status: 'danger',
+            status: status || 'safe',  // Use current status, don't force danger
             alert_type: 'entered_danger_zone',
             lat,
             lng,
@@ -423,16 +537,13 @@ app.post('/api/locations', async (req, res) => {
             zone_level: zone.level,
           });
 
-          // Update profile status
-          await Profile.findOneAndUpdate(
-            { user_id },
-            { status: 'danger', updated_at: new Date() }
-          );
+          console.log(`🚨 ALERT CREATED: User ${username || 'Unknown'} entered ${zone.name} - Alert created (status not auto-changed)`);
         }
       }
-      
-      // User is within 200m of danger zone (proximity alert)
-      if (distance <= 200 && distance > zone.radius) {
+      // User is within 200m of danger zone (proximity alert - OUTSIDE but close)
+      else if (distance <= 200 && distance > zone.radius) {
+        isNearAnyDangerZone = true;
+
         const existingProximityAlert = await Alert.findOne({
           user_id,
           zone_name: zone.name,
@@ -441,12 +552,12 @@ app.post('/api/locations', async (req, res) => {
         });
 
         if (!existingProximityAlert) {
-          // Create proximity alert
+          // Create proximity alert ONLY (don't auto-change status)
           await Alert.create({
             user_id,
             tourist_id,
             username: username || 'Unknown',
-            status: 'alert',
+            status: status || 'safe',  // Use current status, don't force alert
             alert_type: 'near_danger_zone',
             lat,
             lng,
@@ -454,10 +565,13 @@ app.post('/api/locations', async (req, res) => {
             zone_level: zone.level,
           });
 
-          console.log(`⚠️ User ${username} is within 200m of ${zone.name}`);
+          console.log(`⚠️ PROXIMITY ALERT: User ${username || 'Unknown'} is within 200m of ${zone.name} - Alert created (status not auto-changed)`);
         }
       }
     }
+
+    // Don't auto-reset status to safe - let frontend handle it based on user action
+    // Status should only change when user manually changes it or explicitly sends new status
 
     res.json({ success: true, data: location });
   } catch (error) {
@@ -468,23 +582,34 @@ app.post('/api/locations', async (req, res) => {
 // Register new user/tourist profile
 app.post('/api/register', async (req, res) => {
   try {
-    const { username, email, phone, dob, wallet_address, tourist_id, user_id } = req.body;
+    const { username, email, phone, dob, wallet_address, tourist_id, user_id, password } = req.body;
 
     // Check if wallet address already exists
     const existingWallet = await Profile.findOne({ wallet_address });
     if (existingWallet) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Wallet address already registered' 
+      return res.status(400).json({
+        success: false,
+        error: 'Wallet address already registered'
+      });
+    }
+
+    // Check if username already exists
+    const existingUsername = await Profile.findOne({
+      username: { $regex: new RegExp(`^${username}$`, 'i') }
+    });
+    if (existingUsername) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username already taken'
       });
     }
 
     // Check if tourist_id already exists
     const existingTourist = await Profile.findOne({ tourist_id });
     if (existingTourist) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Username already taken' 
+      return res.status(400).json({
+        success: false,
+        error: 'Tourist ID already exists. Please try again.'
       });
     }
 
@@ -498,11 +623,56 @@ app.post('/api/register', async (req, res) => {
       email,
       phone,
       dob,
+      password,  // Save password for login
       wallet_address,
       status: 'safe',
     });
 
     res.json({ success: true, data: profile });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// User login with username and password
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username and password are required'
+      });
+    }
+
+    // Find user by username (case-insensitive)
+    const user = await Profile.findOne({ 
+      username: { $regex: new RegExp(`^${username}$`, 'i') }
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid username or password'
+      });
+    }
+
+    // Check password
+    if (user.password !== password) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid username or password'
+      });
+    }
+
+    // Return user data (without password)
+    const { password: _, ...userWithoutPassword } = user.toObject();
+    res.json({ 
+      success: true, 
+      data: userWithoutPassword,
+      message: 'Login successful'
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -524,6 +694,79 @@ app.get('/api/analytics', async (req, res) => {
 
     res.json({ success: true, data: stats });
   } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Delete test users permanently
+app.delete('/api/users/delete-test-users', async (req, res) => {
+  try {
+    const { confirm } = req.query;
+    
+    if (confirm !== 'true') {
+      return res.status(400).json({
+        success: false,
+        error: 'Confirmation required. Add ?confirm=true to proceed'
+      });
+    }
+
+    // Test user patterns
+    const testPatterns = [
+      'test',
+      'demo',
+      'fake',
+      'dummy',
+      'temp',
+      'temporary',
+      'sample',
+      'example',
+    ];
+
+    // Find all test users
+    const testUsers = await Profile.find({
+      $or: [
+        { username: { $regex: 'test|demo|fake|dummy|temp|sample|example', $options: 'i' } },
+        { email: { $regex: 'test|demo|fake|dummy|temp|sample|example', $options: 'i' } },
+        { tourist_id: { $regex: 'test|demo|fake|dummy|temp|sample|example', $options: 'i' } }
+      ]
+    });
+
+    const deletedCount = testUsers.length;
+    
+    if (deletedCount === 0) {
+      return res.json({
+        success: true,
+        message: 'No test users found',
+        deleted: 0
+      });
+    }
+
+    // Delete test users from MongoDB
+    const result = await Profile.deleteMany({
+      _id: { $in: testUsers.map(u => u._id) }
+    });
+
+    // Also delete their locations, alerts, and notifications
+    await UserLocation.deleteMany({ 
+      user_id: { $in: testUsers.map(u => u.user_id) } 
+    });
+    await Alert.deleteMany({ 
+      user_id: { $in: testUsers.map(u => u.user_id) } 
+    });
+    await Notification.deleteMany({ 
+      tourist_id: { $in: testUsers.map(u => u.tourist_id) } 
+    });
+
+    console.log(`🗑️ Permanently deleted ${deletedCount} test users`);
+
+    res.json({
+      success: true,
+      message: `Successfully deleted ${deletedCount} test users`,
+      deleted: deletedCount,
+      details: result
+    });
+  } catch (error) {
+    console.error('Error deleting test users:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -568,7 +811,31 @@ app.patch('/api/notifications/:id/read', async (req, res) => {
 app.get('/api/locations', async (req, res) => {
   try {
     const locations = await UserLocation.find().sort({ updated_at: -1 });
-    res.json({ success: true, data: locations });
+    
+    // Merge with Profile data to get correct username and status
+    const locationsWithProfiles = await Promise.all(
+      locations.map(async (loc) => {
+        const profile = await Profile.findOne({ user_id: loc.user_id });
+        return {
+          ...loc.toObject(),
+          username: loc.username || profile?.username || 'Unknown',
+          status: profile?.status || loc.status || 'safe'
+        };
+      })
+    );
+    
+    res.json({ success: true, data: locationsWithProfiles });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Delete location by ID (admin only)
+app.delete('/api/locations/:locationId', async (req, res) => {
+  try {
+    const { locationId } = req.params;
+    await UserLocation.findByIdAndDelete(locationId);
+    res.json({ success: true, message: 'Location deleted' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -601,6 +868,20 @@ app.post('/api/clear-db', async (req, res) => {
   }
 });
 
+// Clear all locations only
+app.post('/api/clear-locations', async (req, res) => {
+  try {
+    const result = await UserLocation.deleteMany({});
+    res.json({
+      success: true,
+      message: 'All locations cleared',
+      deleted: result.deletedCount,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Drop entire database (for testing)
 app.post('/api/drop-db', async (req, res) => {
   try {
@@ -614,12 +895,13 @@ app.post('/api/drop-db', async (req, res) => {
   }
 });
 
-// Start server
-app.listen(PORT, () => {
+// Start server with Socket.IO
+server.listen(PORT, () => {
   console.log(`🚀 SafeHaven API Server running on http://localhost:${PORT}`);
   console.log(`📊 MongoDB Database: safehaven_sas`);
   console.log(`🔗 Connection: ${MONGODB_URI}`);
-  
+  console.log(`🔌 Socket.IO ready for real-time updates`);
+
   // Log blockchain status
   if (relayer.isInitialized()) {
     const deploymentInfo = relayer.getDeploymentInfo();

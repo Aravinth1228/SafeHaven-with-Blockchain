@@ -26,8 +26,31 @@ export interface RegisterData {
   dateOfBirth: number;
 }
 
-const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || '0x0000000000000000000000000000000000000000';
-const FORWARDER_ADDRESS = import.meta.env.VITE_FORWARDER_ADDRESS || '0x0000000000000000000000000000000000000000';
+// Get addresses from env and ensure proper checksum
+// Using deployed contract addresses on Sepolia
+const CONTRACT_ADDRESS_RAW = import.meta.env.VITE_CONTRACT_ADDRESS || '0x1033F2E3eC79B69fa2aC5dbf3c57b229457E872e';
+const FORWARDER_ADDRESS_RAW = import.meta.env.VITE_FORWARDER_ADDRESS || '0x6340901345eBB29C55EBBB5E07af9FFf841636fA';
+
+// Ensure proper checksum addresses (handle potential checksum errors gracefully)
+let CONTRACT_ADDRESS: string;
+let FORWARDER_ADDRESS: string;
+
+try {
+  CONTRACT_ADDRESS = ethers.getAddress(CONTRACT_ADDRESS_RAW);
+} catch (e) {
+  console.warn('⚠️ Contract address checksum issue, using as-is:', CONTRACT_ADDRESS_RAW);
+  CONTRACT_ADDRESS = CONTRACT_ADDRESS_RAW;
+}
+
+try {
+  FORWARDER_ADDRESS = ethers.getAddress(FORWARDER_ADDRESS_RAW);
+} catch (e) {
+  console.warn('⚠️ Forwarder address checksum issue, using as-is:', FORWARDER_ADDRESS_RAW);
+  FORWARDER_ADDRESS = FORWARDER_ADDRESS_RAW;
+}
+
+console.log('📝 Contract Address:', CONTRACT_ADDRESS);
+console.log('📝 Forwarder Address:', FORWARDER_ADDRESS);
 
 /**
  * React hook for blockchain interactions

@@ -83,6 +83,18 @@ router.get('/', async (req, res) => {
 
   } catch (error) {
     console.error('Error getting danger zones from blockchain:', error);
+    
+    // If timeout or RPC error, return empty array with warning
+    if (error.message && (error.message.includes('timeout') || error.message.includes('RPC'))) {
+      return res.json({
+        success: true,
+        data: [],
+        blockchainEnabled: true,
+        count: 0,
+        warning: 'Blockchain RPC timeout - please try again or check your RPC connection'
+      });
+    }
+    
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -131,6 +143,18 @@ router.get('/active', async (req, res) => {
 
   } catch (error) {
     console.error('Error getting active danger zones:', error);
+    
+    // If timeout or RPC error, return empty array with warning
+    if (error.message && (error.message.includes('timeout') || error.message.includes('RPC'))) {
+      return res.json({
+        success: true,
+        data: [],
+        blockchainEnabled: true,
+        count: 0,
+        warning: 'Blockchain RPC timeout - please try again or check your RPC connection'
+      });
+    }
+    
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -551,6 +575,48 @@ router.get('/:index', async (req, res) => {
 
   } catch (error) {
     console.error('Error getting danger zone:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/blockchain/danger-zones/delete-tourist
+ * Delete a tourist from blockchain (admin only)
+ */
+router.post('/delete-tourist', async (req, res) => {
+  try {
+    const { wallet_address } = req.body;
+
+    if (!wallet_address) {
+      return res.status(400).json({ success: false, error: 'Wallet address required' });
+    }
+
+    if (!relayer.isInitialized()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Blockchain not initialized',
+        blockchainEnabled: false
+      });
+    }
+
+    console.log('🗑️ Deleting tourist from blockchain:', wallet_address);
+
+    // Call deleteTourist on contract using relayer wallet (admin)
+    const result = await relayer.deleteTourist(wallet_address);
+
+    console.log('✅ Delete transaction confirmed:', result.txHash);
+
+    // Delete from MongoDB as well
+    await Profile.findOneAndDelete({ wallet_address });
+
+    res.json({
+      success: true,
+      message: 'Tourist deleted from blockchain',
+      transactionHash: result.txHash
+    });
+
+  } catch (error) {
+    console.error('Delete tourist error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

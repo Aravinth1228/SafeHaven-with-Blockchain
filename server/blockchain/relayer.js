@@ -17,20 +17,16 @@ class BlockchainRelayer {
     this.contract = null;
     this.forwarderContract = null;
     this.deploymentInfo = null;
-    this.contractAddress = null; // Store contract address separately (ethers v6)
-    this.forwarderAddress = null; // Store forwarder address separately (ethers v6)
-    this.nonces = new Map(); // In-memory nonce tracking
+    this.contractAddress = null;
+    this.forwarderAddress = null;
+    this.nonces = new Map();
     this.initialized = false;
   }
 
-  /**
-   * Initialize the relayer with deployment info
-   */
   async initialize() {
     if (this.initialized) return;
 
     try {
-      // Load deployment info
       const deploymentPath = path.join(__dirname, '..', 'blockchain-deployment.json');
       if (!fs.existsSync(deploymentPath)) {
         console.log('⚠️  Blockchain deployment info not found. Run contract deployment first.');
@@ -40,45 +36,40 @@ class BlockchainRelayer {
       this.deploymentInfo = JSON.parse(fs.readFileSync(deploymentPath, 'utf8'));
       console.log('📄 Loaded deployment info:', this.deploymentInfo.network);
 
-      // Get RPC URL based on network
       let rpcUrl;
       if (this.deploymentInfo.network === 'localhost' || this.deploymentInfo.network === 'hardhat') {
         rpcUrl = 'http://127.0.0.1:8545';
       } else if (this.deploymentInfo.network === 'sepolia') {
-        rpcUrl = process.env.SEPOLIA_RPC_URL || `https://sepolia.infura.io/v3/${process.env.INFURA_PROJECT_ID}`;
+        rpcUrl = process.env.SEPOLIA_RPC_URL ||
+                 'https://ethereum-sepolia-rpc.publicnode.com' ||
+                 'https://sepolia.drpc.org' ||
+                 'https://rpc.sepolia.org' ||
+                 `https://sepolia.infura.io/v3/${process.env.INFURA_PROJECT_ID}`;
       } else if (this.deploymentInfo.network === 'mainnet') {
-        rpcUrl = process.env.MAINNET_RPC_URL || `https://mainnet.infura.io/v3/${process.env.INFURA_PROJECT_ID}`;
+        rpcUrl = process.env.MAINNET_RPC_URL ||
+                 'https://ethereum-rpc.publicnode.com' ||
+                 'https://eth.llamarpc.com' ||
+                 `https://mainnet.infura.io/v3/${process.env.INFURA_PROJECT_ID}`;
       }
 
-      // Initialize provider
       this.provider = new ethers.JsonRpcProvider(rpcUrl);
-      
-      // Initialize admin wallet (relayer)
+
       const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
       if (!adminPrivateKey) {
         throw new Error('ADMIN_PRIVATE_KEY not set in environment');
       }
       this.wallet = new ethers.Wallet(adminPrivateKey, this.provider);
-      
       console.log('✅ Relayer wallet:', this.wallet.address);
 
-      // Load contract ABI
       const abiPath = path.join(__dirname, '..', '..', 'contracts', 'artifacts', 'contracts', 'TouristSafetyERC2771.sol', 'TouristSafetyERC2771.json');
       if (!fs.existsSync(abiPath)) {
         throw new Error('Contract ABI not found. Run `npm run compile` in contracts folder.');
       }
 
       const contractArtifact = JSON.parse(fs.readFileSync(abiPath, 'utf8'));
-      
-      // Initialize contract instance
       this.contractAddress = this.deploymentInfo.contracts.TouristSafetyERC2771.address;
-      this.contract = new ethers.Contract(
-        this.contractAddress,
-        contractArtifact.abi,
-        this.wallet
-      );
+      this.contract = new ethers.Contract(this.contractAddress, contractArtifact.abi, this.wallet);
 
-      // Load forwarder ABI
       const forwarderAbiPath = path.join(__dirname, '..', '..', 'contracts', 'artifacts', 'contracts', 'TrustedForwarder.sol', 'TrustedForwarder.json');
       console.log('🔍 Looking for forwarder ABI at:', forwarderAbiPath);
       console.log('🔍 Forwarder ABI exists:', fs.existsSync(forwarderAbiPath));
@@ -86,17 +77,12 @@ class BlockchainRelayer {
       if (fs.existsSync(forwarderAbiPath)) {
         const forwarderArtifact = JSON.parse(fs.readFileSync(forwarderAbiPath, 'utf8'));
         this.forwarderAddress = this.deploymentInfo.contracts.TrustedForwarder.address;
-        this.forwarderContract = new ethers.Contract(
-          this.forwarderAddress,
-          forwarderArtifact.abi,
-          this.wallet
-        );
+        this.forwarderContract = new ethers.Contract(this.forwarderAddress, forwarderArtifact.abi, this.wallet);
         console.log('✅ Forwarder contract loaded:', this.forwarderAddress);
       } else {
         console.error('❌ Forwarder ABI not found at:', forwarderAbiPath);
       }
 
-      // Load nonces from file if exists
       const noncesPath = path.join(__dirname, 'nonces.json');
       if (fs.existsSync(noncesPath)) {
         const savedNonces = JSON.parse(fs.readFileSync(noncesPath, 'utf8'));
@@ -116,12 +102,8 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Get current nonce for a user (from on-chain forwarder)
-   */
   async getNonce(walletAddress) {
     if (!this.forwarderContract) {
-      // Fallback to local nonce if forwarder not available
       const normalizedAddress = walletAddress.toLowerCase();
       if (!this.nonces.has(normalizedAddress)) {
         this.nonces.set(normalizedAddress, 0);
@@ -129,7 +111,6 @@ class BlockchainRelayer {
       return this.nonces.get(normalizedAddress);
     }
 
-    // Get actual on-chain nonce from forwarder contract
     const normalizedAddress = walletAddress.toLowerCase();
     const onChainNonce = await this.forwarderContract.nonces(normalizedAddress);
     const nonceNum = Number(onChainNonce);
@@ -137,9 +118,6 @@ class BlockchainRelayer {
     return nonceNum;
   }
 
-  /**
-   * Get local nonce (for backwards compatibility)
-   */
   getLocalNonce(walletAddress) {
     const normalizedAddress = walletAddress.toLowerCase();
     if (!this.nonces.has(normalizedAddress)) {
@@ -148,9 +126,6 @@ class BlockchainRelayer {
     return this.nonces.get(normalizedAddress);
   }
 
-  /**
-   * Increment nonce for a user
-   */
   incrementNonce(walletAddress) {
     const normalizedAddress = walletAddress.toLowerCase();
     const currentNonce = this.getLocalNonce(normalizedAddress);
@@ -159,9 +134,6 @@ class BlockchainRelayer {
     return this.nonces.get(normalizedAddress);
   }
 
-  /**
-   * Save nonces to file
-   */
   saveNonces() {
     try {
       const noncesPath = path.join(__dirname, 'nonces.json');
@@ -176,34 +148,51 @@ class BlockchainRelayer {
   }
 
   /**
-   * Verify EIP-712 signature
-   */
-  async verifySignature(walletAddress, domain, types, value, signature) {
-    try {
-      const signerAddress = ethers.verifyTypedData(domain, types, value, signature);
-      return signerAddress.toLowerCase() === walletAddress.toLowerCase();
-    } catch (error) {
-      console.error('Signature verification failed:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Get EIP-712 domain separator (for Forwarder contract)
-   * MUST match the TrustedForwarder constructor: ERC2771Forwarder("SafeHeaven Trusted Forwarder")
+   * Get EIP-712 domain separator
+   * IMPORTANT: OpenZeppelin ERC2771Forwarder uses hardcoded name "ERC2771Forwarder"
    */
   getDomainSeparator() {
     return {
-      name: 'SafeHeaven Trusted Forwarder',  // MUST match ERC2771Forwarder constructor
-      version: '1',                          // OpenZeppelin EIP712 uses version '1'
-      chainId: this.deploymentInfo.chainId,
+      name: 'ERC2771Forwarder',
+      version: '1',
+      chainId: this.deploymentInfo.chainId,  // Number from JSON
       verifyingContract: this.deploymentInfo.contracts.TrustedForwarder.address
     };
   }
 
   /**
-   * Process register tourist meta-transaction
+   * Build correctly typed ForwardRequest for EIP-712 verification
+   * CRITICAL: uint256 fields must be BigInt, uint48 (deadline) must be Number
    */
+  buildTypedForwardRequest(forwardRequest) {
+    return {
+      from: forwardRequest.from,
+      to: forwardRequest.to,
+      value: BigInt(forwardRequest.value || '0'),
+      gas: BigInt(forwardRequest.gas || '300000'),
+      nonce: BigInt(forwardRequest.nonce),
+      deadline: Number(forwardRequest.deadline),  // uint48 = Number
+      data: forwardRequest.data
+    };
+  }
+
+  /**
+   * EIP-712 ForwardRequest type definition
+   */
+  getForwardRequestTypes() {
+    return {
+      ForwardRequest: [
+        { name: "from", type: "address" },
+        { name: "to", type: "address" },
+        { name: "value", type: "uint256" },
+        { name: "gas", type: "uint256" },
+        { name: "nonce", type: "uint256" },
+        { name: "deadline", type: "uint48" },
+        { name: "data", type: "bytes" }
+      ]
+    };
+  }
+
   async registerTourist(walletAddress, forwardRequest, signature) {
     if (!this.initialized) {
       throw new Error('Blockchain relayer not initialized');
@@ -217,6 +206,14 @@ class BlockchainRelayer {
       deadline: forwardRequest.deadline
     });
 
+    // Check if wallet is already registered on-chain
+    const isRegistered = await this.isRegistered(walletAddress);
+    if (isRegistered) {
+      console.log('⚠️ Wallet already registered:', walletAddress);
+      const touristInfo = await this.getTourist(walletAddress);
+      throw new Error(`Already registered with Tourist ID: ${touristInfo?.touristId || 'N/A'}`);
+    }
+
     // Check deadline
     const deadline = BigInt(forwardRequest.deadline);
     const currentBlock = await this.provider.getBlock('latest');
@@ -230,12 +227,18 @@ class BlockchainRelayer {
       throw new Error('Signature expired');
     }
 
-    // Check nonce (forwarder will also verify this)
+    // Check nonce
     const expectedNonce = await this.getNonce(walletAddress);
     console.log('🔢 Checking nonce:', {
       expected: expectedNonce,
       received: Number(forwardRequest.nonce)
     });
+
+    const localNonce = this.getLocalNonce(walletAddress);
+    if (localNonce > expectedNonce) {
+      console.log('⚠️ Local nonce ahead of on-chain, resetting:', { local: localNonce, onChain: expectedNonce });
+      this.nonces.set(walletAddress.toLowerCase(), expectedNonce);
+    }
 
     if (BigInt(forwardRequest.nonce) !== BigInt(expectedNonce)) {
       throw new Error(`Invalid nonce. Expected ${expectedNonce}, got ${forwardRequest.nonce}`);
@@ -248,16 +251,61 @@ class BlockchainRelayer {
       console.log('📝 Contract address:', this.contractAddress);
       console.log('💰 Relayer balance:', await this.provider.getBalance(this.wallet.address));
 
-      // Verify the forwarder contract is loaded
       if (!this.forwarderContract) {
         throw new Error('Forwarder contract not loaded! Check initialization.');
       }
 
-      // Verify the target contract trusts the forwarder BEFORE executing
+      // Double-check registration
+      console.log('🔍 Checking if wallet is already registered on-chain...');
+      const isAlreadyRegistered = await this.isRegistered(forwardRequest.from);
+      if (isAlreadyRegistered) {
+        console.log('⚠️ Wallet already registered:', forwardRequest.from);
+        const touristInfo = await this.getTourist(forwardRequest.from);
+        throw new Error(`Wallet already registered with Tourist ID: ${touristInfo?.touristId || 'N/A'}. Please login instead.`);
+      }
+      console.log('✅ Wallet is not registered, proceeding with registration');
+
+      // ✅ FIXED: Verify signature with correctly typed message
+      console.log('🔐 Verifying signature...');
+      const domain = this.getDomainSeparator();
+      const types = this.getForwardRequestTypes();
+
+      // CRITICAL: Reconstruct with proper JS types matching EIP-712 encoding
+      // uint256 fields → BigInt, uint48 (deadline) → Number
+      const typedMessage = this.buildTypedForwardRequest(forwardRequest);
+
+      console.log('🌐 Domain:', JSON.stringify(domain));
+      console.log('📋 Typed message for verification:', {
+        from: typedMessage.from,
+        to: typedMessage.to,
+        value: typedMessage.value.toString(),
+        gas: typedMessage.gas.toString(),
+        nonce: typedMessage.nonce.toString(),
+        deadline: typedMessage.deadline,
+        data: typedMessage.data?.substring(0, 20) + '...'
+      });
+      
+      // DEBUG: Log chainId being used
+      console.log('🔐 Backend chainId:', domain.chainId);
+      console.log('🔐 Forwarder address:', domain.verifyingContract);
+
+      const recoveredSigner = ethers.verifyTypedData(domain, types, typedMessage, signature);
+      console.log('🔐 Recovered signer:', recoveredSigner);
+      console.log('🔐 Expected signer:', forwardRequest.from);
+      
+      // DEBUG: Check if chainId matches
+      console.log('🔐 Signature chainId should match backend chainId:', domain.chainId);
+
+      if (recoveredSigner.toLowerCase() !== forwardRequest.from.toLowerCase()) {
+        console.error('❌ SIGNATURE MISMATCH! This is usually caused by chainId mismatch.');
+        console.error('Frontend might be signing with different chainId than backend.');
+        throw new Error(`Invalid signature: recovered ${recoveredSigner}, expected ${forwardRequest.from}. Check chainId!`);
+      }
+      console.log('✅ Signature verified successfully');
+
+      // Verify the target contract trusts the forwarder
       try {
         console.log('🔐 Checking if target trusts forwarder...');
-        console.log('   Target:', this.contractAddress);
-        console.log('   Forwarder:', this.forwarderAddress);
         const isTrusted = await this.contract.isTrustedForwarder(this.forwarderAddress);
         console.log('🔐 Target contract trusts forwarder:', isTrusted);
         if (!isTrusted) {
@@ -268,44 +316,44 @@ class BlockchainRelayer {
         throw trustErr;
       }
 
-      // Use forwarder to execute the transaction
+      // ✅ FIXED: Execute request with correct types for ethers v6
       const request = {
         from: forwardRequest.from,
         to: forwardRequest.to,
-        value: 0,
-        gas: 300000,
-        nonce: expectedNonce,
+        value: BigInt(forwardRequest.value || '0'),
+        gas: BigInt(forwardRequest.gas || '300000'),
+        nonce: BigInt(expectedNonce),
         deadline: Number(deadline),
         data: forwardRequest.data,
         signature: signature
       };
 
-      console.log('🔐 Forward request:', request);
-
-      // Execute through forwarder
+      console.log('🔐 Executing forward request...');
       console.log('📤 Executing forwarder transaction...');
-      
-      // Try to estimate gas first to get a better error message
+
+      // Gas estimation
       try {
         const gasEstimate = await this.forwarderContract.execute.estimateGas(request);
         console.log('⛽ Gas estimate:', gasEstimate.toString());
       } catch (gasErr) {
         console.error('❌ Gas estimation failed:', gasErr.message);
-        console.error('This means the transaction would revert. Check:');
-        console.error('  1. Nonce matches on-chain nonce');
-        console.error('  2. Signature is valid (correct domain separator)');
-        console.error('  3. Target contract trusts the forwarder');
-        console.error('  4. Deadline has not expired');
-        throw gasErr;
+
+        let helpfulMessage = 'Transaction would revert. ';
+        if (forwardRequest.data?.startsWith('0x959ed9d2')) {
+          const isReg = await this.isRegistered(forwardRequest.from);
+          if (isReg) helpfulMessage = 'Wallet already registered on blockchain. ';
+        }
+
+        console.error(helpfulMessage);
+        throw new Error(helpfulMessage + gasErr.message);
       }
-      
+
       const tx = await this.forwarderContract.execute(request);
       console.log('📝 Transaction sent:', tx.hash);
 
       const receipt = await tx.wait();
       console.log('✅ Transaction confirmed:', receipt.hash, 'Block:', receipt.blockNumber);
 
-      // Increment nonce
       this.incrementNonce(walletAddress);
 
       return {
@@ -314,6 +362,7 @@ class BlockchainRelayer {
         blockNumber: receipt.blockNumber,
         touristId: this.extractTouristIdFromReceipt(receipt)
       };
+
     } catch (error) {
       console.error('❌ Transaction failed:', error);
       console.error('Error details:', {
@@ -325,9 +374,6 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Process update status meta-transaction
-   */
   async updateStatus(walletAddress, forwardRequest, signature) {
     if (!this.initialized) {
       throw new Error('Blockchain relayer not initialized');
@@ -336,56 +382,47 @@ class BlockchainRelayer {
     console.log('📝 Update status request:', {
       wallet: walletAddress,
       from: forwardRequest.from,
-      to: forwardRequest.to,
       nonce: forwardRequest.nonce,
       deadline: forwardRequest.deadline
     });
 
-    // Check if user is registered on blockchain
     const isRegistered = await this.isRegistered(walletAddress);
     if (!isRegistered) {
       throw new Error('User not registered on blockchain. Please register first.');
     }
     console.log('✅ User is registered:', walletAddress);
 
-    // Check deadline
     const deadline = BigInt(forwardRequest.deadline);
     const currentBlock = await this.provider.getBlock('latest');
-    console.log('⏰ Checking deadline:', {
-      deadline: Number(deadline),
-      currentBlock: currentBlock.timestamp,
-      expired: deadline < currentBlock.timestamp
-    });
     if (deadline < currentBlock.timestamp) {
       throw new Error('Signature expired');
     }
 
-    // Check nonce (forwarder will also verify this)
     const expectedNonce = await this.getNonce(walletAddress);
-    console.log('🔢 Checking nonce:', {
-      expected: expectedNonce,
-      received: Number(forwardRequest.nonce)
-    });
+    const localNonce = this.getLocalNonce(walletAddress);
+    if (localNonce > expectedNonce) {
+      this.nonces.set(walletAddress.toLowerCase(), expectedNonce);
+    }
+
     if (BigInt(forwardRequest.nonce) !== BigInt(expectedNonce)) {
       throw new Error(`Invalid nonce. Expected ${expectedNonce}, got ${forwardRequest.nonce}`);
     }
 
     try {
-      // Use forwarder to execute the transaction
+      // ✅ FIXED: Correct types for ethers v6
       const request = {
         from: forwardRequest.from,
         to: forwardRequest.to,
-        value: 0,
-        gas: 150000,  // Increased gas for status update
-        nonce: expectedNonce,
+        value: BigInt(forwardRequest.value || '0'),
+        gas: BigInt(forwardRequest.gas || '150000'),
+        nonce: BigInt(expectedNonce),
         deadline: Number(deadline),
         data: forwardRequest.data,
         signature: signature
       };
 
       console.log('📤 Executing update status via forwarder...');
-      
-      // Try to estimate gas first
+
       try {
         const gasEstimate = await this.forwarderContract.execute.estimateGas(request);
         console.log('⛽ Gas estimate:', gasEstimate.toString());
@@ -406,46 +443,42 @@ class BlockchainRelayer {
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber
       };
+
     } catch (error) {
       console.error('❌ Update status transaction failed:', error);
-      console.error('Error details:', {
-        reason: error.reason,
-        code: error.code,
-        error: error.error?.message
-      });
       throw new Error(`Transaction failed: ${error.reason || error.message}`);
     }
   }
 
-  /**
-   * Process update location meta-transaction
-   */
   async updateLocation(walletAddress, forwardRequest, signature) {
     if (!this.initialized) {
       throw new Error('Blockchain relayer not initialized');
     }
 
-    // Check deadline
     const deadline = BigInt(forwardRequest.deadline);
     const currentBlock = await this.provider.getBlock('latest');
     if (deadline < currentBlock.timestamp) {
       throw new Error('Signature expired');
     }
 
-    // Check nonce (forwarder will also verify this)
     const expectedNonce = await this.getNonce(walletAddress);
+    const localNonce = this.getLocalNonce(walletAddress);
+    if (localNonce > expectedNonce) {
+      this.nonces.set(walletAddress.toLowerCase(), expectedNonce);
+    }
+
     if (BigInt(forwardRequest.nonce) !== BigInt(expectedNonce)) {
       throw new Error(`Invalid nonce. Expected ${expectedNonce}, got ${forwardRequest.nonce}`);
     }
 
     try {
-      // Use forwarder to execute the transaction
+      // ✅ FIXED: Correct types for ethers v6
       const request = {
         from: forwardRequest.from,
         to: forwardRequest.to,
-        value: 0,
-        gas: 100000,
-        nonce: expectedNonce,
+        value: BigInt(forwardRequest.value || '0'),
+        gas: BigInt(forwardRequest.gas || '100000'),
+        nonce: BigInt(expectedNonce),
         deadline: Number(deadline),
         data: forwardRequest.data,
         signature: signature
@@ -463,48 +496,35 @@ class BlockchainRelayer {
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber
       };
+
     } catch (error) {
       console.error('Transaction failed:', error);
       throw new Error(`Transaction failed: ${error.reason || error.message}`);
     }
   }
 
-  /**
-   * Check if user is registered
-   */
   async isRegistered(walletAddress) {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
-      const result = await this.contract.isRegistered(walletAddress);
-      return result;
+      return await this.contract.isRegistered(walletAddress);
     } catch (error) {
       console.error('Error checking registration:', error);
       return false;
     }
   }
 
-  /**
-   * Get tourist info
-   */
   async getTourist(walletAddress) {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
       const tourist = await this.contract.getTourist(walletAddress);
       if (!tourist.isActive) return null;
-      
       return {
         touristId: tourist.touristId,
         username: tourist.username,
         email: tourist.email,
         phone: tourist.phone,
         dateOfBirth: tourist.dateOfBirth.toString(),
-        status: tourist.status,
+        status: Number(tourist.status),
         registeredAt: tourist.registeredAt.toString(),
         isActive: tourist.isActive,
         lastLatitude: tourist.lastLatitude.toString(),
@@ -517,9 +537,6 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Extract tourist ID from transaction receipt
-   */
   extractTouristIdFromReceipt(receipt) {
     try {
       const contractInterface = this.contract.interface;
@@ -529,9 +546,7 @@ class BlockchainRelayer {
           if (parsed && parsed.name === 'TouristRegistered') {
             return parsed.args.touristId;
           }
-        } catch {
-          continue;
-        }
+        } catch { continue; }
       }
     } catch (error) {
       console.error('Error extracting tourist ID:', error);
@@ -539,49 +554,34 @@ class BlockchainRelayer {
     return null;
   }
 
-  /**
-   * Get deployment info
-   */
   getDeploymentInfo() {
     return this.deploymentInfo;
   }
 
-  /**
-   * Check if relayer is initialized
-   */
   isInitialized() {
     return this.initialized;
   }
 
-  /**
-   * Process create danger zone meta-transaction
-   */
   async createDangerZone(adminAddress, forwardRequest, signature) {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
 
-    // Check deadline
     const deadline = BigInt(forwardRequest.deadline);
     const currentBlock = await this.provider.getBlock('latest');
-    if (deadline < currentBlock.timestamp) {
-      throw new Error('Signature expired');
-    }
+    if (deadline < currentBlock.timestamp) throw new Error('Signature expired');
 
-    // Check nonce
     const expectedNonce = await this.getNonce(adminAddress);
     if (BigInt(forwardRequest.nonce) !== BigInt(expectedNonce)) {
       throw new Error(`Invalid nonce. Expected ${expectedNonce}, got ${forwardRequest.nonce}`);
     }
 
     try {
-      // Use forwarder to execute the transaction
+      // ✅ FIXED: Correct types
       const request = {
         from: forwardRequest.from,
         to: forwardRequest.to,
-        value: 0,
-        gas: 300000,
-        nonce: expectedNonce,
+        value: BigInt(forwardRequest.value || '0'),
+        gas: BigInt(forwardRequest.gas || '300000'),
+        nonce: BigInt(expectedNonce),
         deadline: Number(deadline),
         data: forwardRequest.data,
         signature: signature
@@ -607,9 +607,6 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Extract zone ID from transaction receipt
-   */
   extractZoneIdFromReceipt(receipt) {
     try {
       const contractInterface = this.contract.interface;
@@ -619,9 +616,7 @@ class BlockchainRelayer {
           if (parsed && parsed.name === 'DangerZoneCreated') {
             return parsed.args.zoneId;
           }
-        } catch {
-          continue;
-        }
+        } catch { continue; }
       }
     } catch (error) {
       console.error('Error extracting zone ID:', error);
@@ -629,23 +624,23 @@ class BlockchainRelayer {
     return null;
   }
 
-  /**
-   * Get all danger zones from blockchain
-   */
   async getAllDangerZones() {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
-      const zones = await this.contract.getAllDangerZones();
+      // Add timeout handling for slow RPC connections
+      const zones = await Promise.race([
+        this.contract.getAllDangerZones(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Blockchain RPC timeout (30s)')), 30000)
+        )
+      ]);
       return zones.map(zone => ({
         zoneId: zone.zoneId,
         name: zone.name,
         latitude: zone.latitude.toString(),
         longitude: zone.longitude.toString(),
         radius: zone.radius.toString(),
-        level: zone.level.toString(), // Convert BigInt to string
+        level: zone.level.toString(),
         createdBy: zone.createdBy,
         createdAt: zone.createdAt.toString(),
         isActive: zone.isActive
@@ -656,23 +651,23 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Get active danger zones from blockchain
-   */
   async getActiveDangerZones() {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
-      const zones = await this.contract.getActiveDangerZones();
+      // Add timeout handling for slow RPC connections
+      const zones = await Promise.race([
+        this.contract.getActiveDangerZones(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Blockchain RPC timeout (30s)')), 30000)
+        )
+      ]);
       return zones.map(zone => ({
         zoneId: zone.zoneId,
         name: zone.name,
         latitude: zone.latitude.toString(),
         longitude: zone.longitude.toString(),
         radius: zone.radius.toString(),
-        level: zone.level.toString(), // Convert BigInt to string
+        level: zone.level.toString(),
         createdBy: zone.createdBy,
         createdAt: zone.createdAt.toString(),
         isActive: zone.isActive
@@ -683,14 +678,8 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Get danger zone count
-   */
   async getDangerZoneCount() {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
       const zones = await this.contract.getAllDangerZones();
       return zones.length;
@@ -700,26 +689,18 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Get danger zone by index
-   */
   async getDangerZoneByIndex(index) {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
       const zone = await this.contract.dangerZones(index);
-      if (!zone.isActive) {
-        return null;
-      }
+      if (!zone.isActive) return null;
       return {
         zoneId: zone.zoneId,
         name: zone.name,
         latitude: zone.latitude.toString(),
         longitude: zone.longitude.toString(),
         radius: zone.radius.toString(),
-        level: zone.level.toString(), // Convert BigInt to string
+        level: zone.level.toString(),
         createdBy: zone.createdBy,
         createdAt: zone.createdAt.toString(),
         isActive: zone.isActive
@@ -730,32 +711,20 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Create danger zone directly (admin wallet signs, no meta-transaction)
-   */
   async createDangerZoneDirect(adminAddress, name, latitude, longitude, radius, level) {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
       console.log('📤 Creating danger zone directly on blockchain...');
-      console.log('   Name:', name);
-      console.log('   Lat:', latitude, 'Lng:', longitude);
-      console.log('   Radius:', radius, 'Level:', level);
-
-      // Call contract function directly
       const tx = await this.contract.createDangerZone(name, latitude, longitude, radius, level);
       console.log('📝 Danger zone tx:', tx.hash);
       const receipt = await tx.wait();
       console.log('✅ Danger zone transaction confirmed:', receipt.hash);
-
       return {
         success: true,
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber,
         zoneId: this.extractZoneIdFromReceipt(receipt),
-        zoneIndex: receipt.logs.length // Approximate index
+        zoneIndex: receipt.logs.length
       };
     } catch (error) {
       console.error('Danger zone direct creation failed:', error);
@@ -763,66 +732,63 @@ class BlockchainRelayer {
     }
   }
 
-  /**
-   * Update danger zone on blockchain
-   */
   async updateDangerZone(adminAddress, zoneIndex, name, radius, level) {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
-      console.log('📝 Updating danger zone (index:', zoneIndex, ')');
-      console.log('Update data:', { name, radius, level });
-
-      // Call contract function directly
       const tx = await this.contract.updateDangerZone(zoneIndex, name, radius, level);
-      console.log('📝 Update danger zone tx:', tx.hash);
       const receipt = await tx.wait();
       console.log('✅ Danger zone update confirmed:', receipt.hash);
-
-      return {
-        success: true,
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber
-      };
+      return { success: true, txHash: receipt.hash, blockNumber: receipt.blockNumber };
     } catch (error) {
       console.error('Danger zone update failed:', error);
       throw new Error(`Transaction failed: ${error.reason || error.message}`);
     }
   }
 
-  /**
-   * Get the relayer wallet address
-   */
+  async deleteTourist(walletAddress) {
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
+    
+    console.log('🗑️ Deleting tourist from blockchain:', walletAddress);
+    
+    try {
+      // Check if tourist exists
+      const isRegistered = await this.isRegistered(walletAddress);
+      if (!isRegistered) {
+        throw new Error('Tourist not found on blockchain');
+      }
+      
+      // Call deleteTourist function on contract (admin only)
+      const tx = await this.contract.deleteTourist(walletAddress);
+      console.log('📝 Delete tourist tx:', tx.hash || tx);
+      
+      // Wait for transaction confirmation
+      const receipt = await tx.wait ? tx.wait() : tx;
+      console.log('✅ Tourist deleted from blockchain:', receipt.hash || receipt.transactionHash || receipt);
+      
+      return {
+        success: true,
+        txHash: receipt.hash || receipt.transactionHash || receipt,
+        blockNumber: receipt.blockNumber
+      };
+    } catch (error) {
+      console.error('Delete tourist failed:', error);
+      if (error.reason) throw new Error(`Contract reverted: ${error.reason}`);
+      throw new Error(`Transaction failed: ${error.message}`);
+    }
+  }
+
   getRelayerAddress() {
     return this.wallet ? this.wallet.address : null;
   }
 
-  /**
-   * Remove danger zone from blockchain
-   */
   async removeDangerZone(adminAddress, zoneIndex) {
-    if (!this.initialized) {
-      throw new Error('Blockchain relayer not initialized');
-    }
-
+    if (!this.initialized) throw new Error('Blockchain relayer not initialized');
     try {
       console.log('📤 Removing danger zone from blockchain (index:', zoneIndex, ')');
-      console.log('Admin address:', adminAddress);
 
-      // First check if the zone exists and is active
       try {
         const zone = await this.contract.dangerZones(zoneIndex);
-        console.log('Zone info:', {
-          zoneId: zone.zoneId,
-          name: zone.name,
-          isActive: zone.isActive
-        });
-
-        if (!zone.isActive) {
-          throw new Error(`Zone at index ${zoneIndex} is already inactive`);
-        }
+        if (!zone.isActive) throw new Error(`Zone at index ${zoneIndex} is already inactive`);
       } catch (checkErr) {
         if (checkErr.code === 'CALL_EXCEPTION' || checkErr.reason === 'execution reverted') {
           throw new Error(`Invalid zone index: ${zoneIndex}. Zone may not exist.`);
@@ -830,27 +796,17 @@ class BlockchainRelayer {
         throw checkErr;
       }
 
-      // Call contract function directly
       const tx = await this.contract.removeDangerZone(zoneIndex);
-      console.log('📝 Remove danger zone tx:', tx.hash);
       const receipt = await tx.wait();
       console.log('✅ Danger zone removal confirmed:', receipt.hash);
-
-      return {
-        success: true,
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber
-      };
+      return { success: true, txHash: receipt.hash, blockNumber: receipt.blockNumber };
     } catch (error) {
       console.error('Danger zone removal failed:', error);
-      if (error.reason) {
-        throw new Error(`Contract reverted: ${error.reason}`);
-      }
+      if (error.reason) throw new Error(`Contract reverted: ${error.reason}`);
       throw new Error(`Transaction failed: ${error.message}`);
     }
   }
 }
 
-// Export singleton instance
 const relayer = new BlockchainRelayer();
 module.exports = relayer;

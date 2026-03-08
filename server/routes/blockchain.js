@@ -134,29 +134,42 @@ router.get('/tourist/:wallet', async (req, res) => {
 /**
  * POST /api/blockchain/meta-tx
  * Submit a meta-transaction for processing
- * 
+ *
  * Body:
  * - action: 'register' | 'updateStatus' | 'updateLocation'
  * - wallet: User's wallet address
- * - signature: EIP-712 signature
+ * - signature: EIP-712 signature (required for 'register' only)
  * - message: Signed message data
+ *
+ * Note: 
+ * - 'register': Uses blockchain + MongoDB
+ * - 'updateStatus': MongoDB only (no blockchain)
+ * - 'updateLocation': MongoDB only (no blockchain)
  */
 router.post('/meta-tx', async (req, res) => {
   try {
     const { action, wallet, signature, message } = req.body;
 
     // Validate input
-    if (!action || !wallet || !signature || !message) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Missing required fields: action, wallet, signature, message' 
+    if (!action || !wallet || !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: action, wallet, message'
       });
     }
 
-    // Check if blockchain is initialized
-    if (!relayer.isInitialized()) {
-      return res.status(503).json({ 
-        success: false, 
+    // Signature is only required for 'register' action
+    if (action === 'register' && !signature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Signature required for registration'
+      });
+    }
+
+    // Check if blockchain is initialized (only required for 'register' action)
+    if (action === 'register' && !relayer.isInitialized()) {
+      return res.status(503).json({
+        success: false,
         error: 'Blockchain not initialized. Please deploy contracts first.',
         blockchainEnabled: false
       });
@@ -207,85 +220,199 @@ router.post('/meta-tx', async (req, res) => {
         break;
 
       case 'updateStatus':
-        result = await relayer.updateStatus(wallet, message, signature);
-
-        // Also update MongoDB profile status
+        // Handle both blockchain meta-transaction AND direct MongoDB update
         try {
-          const statusMap = { 0: 'safe', 1: 'alert', 2: 'danger' };
-          const newStatus = statusMap[message.status] || 'safe';
-
-          // First try to find by wallet_address
-          let profile = await Profile.findOne({ wallet_address: wallet });
-
-          // If not found, try searching by tourist_id from blockchain
-          if (!profile) {
-            const touristInfo = await relayer.getTourist(wallet);
-            if (touristInfo && touristInfo.touristId) {
-              profile = await Profile.findOne({ tourist_id: touristInfo.touristId });
-            }
+          // Check if this is a blockchain meta-transaction (has signature in request body)
+          const isBlockchainTx = !!signature;
+          
+          let status;
+          
+          if (isBlockchainTx) {
+            // Blockchain sends status as number (0=safe, 1=alert, 2=danger)
+            const statusMap = {
+              '0': 'safe',
+              '1': 'alert',
+              '2': 'danger'
+            };
+            // For blockchain tx, status comes from decoded data
+            const { ethers } = require('ethers');
+            const updateInterface = new ethers.Interface([
+              "function updateStatus(uint8 status) external"
+            ]);
+            const decoded = updateInterface.decodeFunctionData('updateStatus', message.data);
+            status = statusMap[decoded.status.toString()] || 'safe';
+            console.log('📝 Blockchain status update decoded:', status);
+          } else {
+            // Direct MongoDB update (status as string)
+            status = message.status;
           }
+          
+          if (!status || !['safe', 'alert', 'danger'].includes(status)) {
+            return res.status(400).json({
+              success: false,
+              error: 'Invalid status. Must be: safe, alert, or danger'
+            });
+          }
+
+          // Find profile by wallet address
+          let profile = await Profile.findOne({ wallet_address: wallet });
 
           if (profile) {
             await Profile.findByIdAndUpdate(profile._id, {
-              status: newStatus,
+              status: status,
               updated_at: new Date()
             });
-            console.log('✅ MongoDB status updated for:', wallet, 'Tourist ID:', profile.tourist_id);
+            console.log('✅ MongoDB status updated for:', wallet, 'Status:', status);
           } else {
-            // Profile doesn't exist - create it with blockchain info
-            const touristInfo = await relayer.getTourist(wallet);
-            if (touristInfo && touristInfo.touristId) {
-              const newProfile = await Profile.create({
-                wallet_address: wallet,
-                tourist_id: touristInfo.touristId,
-                username: touristInfo.username || `User-${wallet.substring(0, 6)}`,
-                email: '',
-                phone: '',
-                dob: null,
-                status: newStatus,
-                created_at: new Date(),
-                updated_at: new Date()
-              });
-              console.log('✅ MongoDB profile created for:', wallet, 'Tourist ID:', newProfile.tourist_id);
-            } else {
-              console.warn('⚠️ No blockchain info found for wallet:', wallet);
-            }
+            // Profile doesn't exist - create it
+            const newProfile = await Profile.create({
+              wallet_address: wallet,
+              tourist_id: message.touristId || `TID-${Date.now()}`,
+              username: message.username || `User-${wallet.substring(0, 6)}`,
+              email: message.email || '',
+              phone: message.phone || '',
+              dob: message.dateOfBirth ? new Date(Number(message.dateOfBirth) * 1000).toISOString() : null,
+              status: status,
+              created_at: new Date(),
+              updated_at: new Date()
+            });
+            console.log('✅ MongoDB profile created for:', wallet, 'Status:', status);
           }
+
+          // Create alert if status is alert/danger
+          if (status === 'alert' || status === 'danger') {
+            const profileData = await Profile.findOne({ wallet_address: wallet });
+            await Alert.create({
+              user_id: profileData?.user_id || 'unknown',
+              tourist_id: profileData?.tourist_id || 'unknown',
+              username: profileData?.username || `User-${wallet.substring(0, 6)}`,
+              status: status,
+              alert_type: 'status_change',
+            });
+          }
+
+          // If blockchain transaction, execute it
+          let result;
+          if (isBlockchainTx) {
+            result = await relayer.updateStatus(wallet, message, signature);
+            console.log('✅ Blockchain status update confirmed');
+          } else {
+            result = { success: true, message: 'Status updated in MongoDB' };
+          }
+          
+          return res.json({
+            success: true,
+            data: result,
+            blockchainEnabled: isBlockchainTx
+          });
         } catch (dbErr) {
-          console.error('⚠️ Failed to update MongoDB status:', dbErr.message);
+          console.error('❌ Failed to update status:', dbErr.message);
+          throw new Error(`Status update failed: ${dbErr.message}`);
         }
         break;
 
       case 'updateLocation':
-        result = await relayer.updateLocation(wallet, message, signature);
-        
-        // Also update MongoDB location
+        // MongoDB-only location update (no blockchain call)
         try {
-          const { UserLocation } = require('../models');
-          const { ethers } = require('ethers');
-          
-          // Decode latitude and longitude from the encoded data
-          const locationInterface = new ethers.Interface([
-            "function updateLocation(int256 latitude, int256 longitude) external"
-          ]);
-          const decoded = locationInterface.decodeFunctionData('updateLocation', message.data);
-          const lat = Number(decoded.latitude) / 1e6;
-          const lng = Number(decoded.longitude) / 1e6;
-          
+          const { lat, lng, status, tourist_id, user_id, username } = message;
+
+          if (lat === undefined || lng === undefined) {
+            return res.status(400).json({
+              success: false,
+              error: 'Latitude and longitude are required'
+            });
+          }
+
+          // Upsert location in MongoDB
           await UserLocation.findOneAndUpdate(
             { wallet_address: wallet },
             {
               wallet_address: wallet,
-              lat,
-              lng,
-              status: 'safe',
+              user_id: user_id || `user-${Date.now()}`,
+              tourist_id: tourist_id || `TID-${Date.now()}`,
+              lat: Number(lat),
+              lng: Number(lng),
+              status: status || 'safe',
               updated_at: new Date()
             },
             { upsert: true }
           );
           console.log('✅ MongoDB location updated for:', wallet, 'Lat:', lat, 'Lng:', lng);
+
+          // Update profile status if provided
+          if (status) {
+            await Profile.findOneAndUpdate(
+              { wallet_address: wallet },
+              { status, updated_at: new Date() }
+            );
+          }
+
+          // Check if user is in danger zone (from MongoDB)
+          const zones = await DangerZone.find();
+          for (const zone of zones) {
+            const distance = calculateDistance(Number(lat), Number(lng), zone.lat, zone.lng);
+
+            // User entered danger zone
+            if (distance <= zone.radius) {
+              const existingAlert = await Alert.findOne({
+                user_id,
+                zone_name: zone.name,
+                alert_type: 'entered_danger_zone',
+                dismissed: false
+              });
+
+              if (!existingAlert) {
+                await Alert.create({
+                  user_id: user_id || 'unknown',
+                  tourist_id: tourist_id || 'unknown',
+                  username: username || `User-${wallet.substring(0, 6)}`,
+                  status: 'danger',
+                  alert_type: 'entered_danger_zone',
+                  lat: Number(lat),
+                  lng: Number(lng),
+                  zone_name: zone.name,
+                  zone_level: zone.level,
+                });
+
+                // Update profile status to danger
+                await Profile.findOneAndUpdate(
+                  { wallet_address: wallet },
+                  { status: 'danger', updated_at: new Date() }
+                );
+
+                console.log('🚨 User entered danger zone:', zone.name);
+              }
+            }
+            // User is within 200m of danger zone (proximity alert)
+            else if (distance <= 200 && distance > zone.radius) {
+              const existingProximityAlert = await Alert.findOne({
+                user_id,
+                zone_name: zone.name,
+                alert_type: 'near_danger_zone',
+                dismissed: false
+              });
+
+              if (!existingProximityAlert) {
+                await Alert.create({
+                  user_id: user_id || 'unknown',
+                  tourist_id: tourist_id || 'unknown',
+                  username: username || `User-${wallet.substring(0, 6)}`,
+                  status: 'alert',
+                  alert_type: 'near_danger_zone',
+                  lat: Number(lat),
+                  lng: Number(lng),
+                  zone_name: zone.name,
+                  zone_level: zone.level,
+                });
+                console.log('⚠️ User within 200m of danger zone:', zone.name);
+              }
+            }
+          }
+
+          result = { success: true, message: 'Location updated in MongoDB' };
         } catch (dbErr) {
-          console.error('⚠️ Failed to update MongoDB location:', dbErr.message);
+          console.error('❌ Failed to update MongoDB location:', dbErr.message);
+          throw new Error(`MongoDB update failed: ${dbErr.message}`);
         }
         break;
 
@@ -497,6 +624,48 @@ router.post('/danger-zone', async (req, res) => {
 
   } catch (error) {
     console.error('Create danger zone error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/blockchain/delete-tourist
+ * Delete a tourist from blockchain (admin only)
+ */
+router.post('/delete-tourist', async (req, res) => {
+  try {
+    const { wallet_address, admin_wallet } = req.body;
+
+    if (!wallet_address) {
+      return res.status(400).json({ success: false, error: 'Wallet address required' });
+    }
+
+    if (!relayer.isInitialized()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Blockchain not initialized',
+        blockchainEnabled: false
+      });
+    }
+
+    console.log('🗑️ Deleting tourist from blockchain:', wallet_address);
+
+    // Call deleteTourist on contract using admin wallet
+    const result = await relayer.deleteTourist(wallet_address);
+
+    console.log('✅ Delete transaction confirmed:', result.txHash);
+
+    // Delete from MongoDB as well
+    await Profile.findOneAndDelete({ wallet_address });
+
+    res.json({
+      success: true,
+      message: 'Tourist deleted from blockchain',
+      transactionHash: result.txHash
+    });
+
+  } catch (error) {
+    console.error('Delete tourist error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

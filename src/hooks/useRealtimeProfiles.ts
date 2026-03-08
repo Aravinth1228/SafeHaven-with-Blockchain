@@ -71,8 +71,8 @@ export function useRealtimeProfiles({
     // Initial fetch
     fetchProfiles();
 
-    // Poll every 5 seconds for profile changes
-    pollIntervalRef.current = setInterval(fetchProfiles, 5000);
+    // Poll every 2 seconds for profile changes (faster real-time updates)
+    pollIntervalRef.current = setInterval(fetchProfiles, 2000);
 
     return () => {
       if (pollIntervalRef.current) {

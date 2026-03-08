@@ -139,28 +139,33 @@ class ContractService {
 
   async getTouristCount(): Promise<number> {
     this.ensureInitialized();
-    const count = await this.contract!.getTouristCount();
-    return Number(count);
+    try {
+      // Get all registered tourists from events to count them
+      const filter = this.contract!.filters.TouristRegistered();
+      const events = await this.contract!.queryFilter(filter, -10000); // Last 10000 blocks
+      return events.length;
+    } catch (error) {
+      console.error('Error fetching tourist count:', error);
+      return 0;
+    }
   }
 
   async getAllTouristAddresses(): Promise<string[]> {
     this.ensureInitialized();
     try {
-      // Try to get from contract (admin only)
-      const count = await this.getTouristCount();
       const addresses: string[] = [];
-      
+
       // Get all registered tourists from events
       const filter = this.contract!.filters.TouristRegistered();
       const events = await this.contract!.queryFilter(filter, -10000); // Last 10000 blocks
-      
+
       for (const event of events) {
         const wallet = event.args?.wallet;
         if (wallet && !addresses.includes(wallet)) {
           addresses.push(wallet);
         }
       }
-      
+
       return addresses;
     } catch (error) {
       console.error('Error fetching tourist addresses:', error);
@@ -171,27 +176,26 @@ class ContractService {
   async getAllTourists(): Promise<Tourist[]> {
     this.ensureInitialized();
     try {
-      const tourists = await this.contract!.getAllTourists();
-      return tourists.map((t: any) => ({
-        touristId: t.touristId,
-        username: t.username,
-        email: t.email,
-        phone: t.phone,
-        dob: t.dateOfBirth,
-        status: t.status,
-        registeredAt: t.registeredAt,
-        isRegistered: t.isActive,
-        lastLatitude: t.lastLatitude,
-        lastLongitude: t.lastLongitude,
-        lastLocationUpdate: t.lastLocationUpdate,
-      }));
+      const tourists: Tourist[] = [];
+
+      // Get all registered tourists from events
+      const filter = this.contract!.filters.TouristRegistered();
+      const events = await this.contract!.queryFilter(filter, -10000); // Last 10000 blocks
+
+      for (const event of events) {
+        const wallet = event.args?.wallet;
+        if (wallet) {
+          const tourist = await this.getTourist(wallet);
+          if (tourist && tourist.isRegistered) {
+            tourists.push(tourist);
+          }
+        }
+      }
+
+      return tourists;
     } catch (error) {
       console.error('Error fetching all tourists (admin only):', error);
-      // Fallback: get tourist count and fetch individually
-      const count = await this.getTouristCount();
-      const tourists: Tourist[] = [];
-      // Note: We can't fetch by index directly, so return empty array
-      return tourists;
+      return [];
     }
   }
 
