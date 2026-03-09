@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 interface UserLocation {
@@ -7,7 +7,6 @@ interface UserLocation {
   lat: number;
   lng: number;
   username: string;
-  address?: string;  // Optional address field
   status: 'safe' | 'alert' | 'danger';
   updated_at?: string;
 }
@@ -33,23 +32,30 @@ export function useSocket({
 }: UseSocketOptions = {}) {
   const socketRef = useRef<Socket | null>(null);
   const isConnectedRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
+  const [connectionState, setConnectionState] = useState<'connected' | 'disconnected' | 'reconnecting'>('disconnected');
 
   // Connect to Socket.IO
   useEffect(() => {
     if (!enabled) return;
 
     console.log('🔌 Connecting to Socket.IO...', SOCKET_URL);
-    
+
     socketRef.current = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
       reconnectionAttempts: 10,
+      randomizationFactor: 0.5,
+      forceNew: false, // Reuse existing connection
     });
 
     socketRef.current.on('connect', () => {
       console.log('✅ Socket.IO connected:', socketRef.current?.id);
       isConnectedRef.current = true;
+      setConnectionState('connected');
+      reconnectAttemptsRef.current = 0;
 
       // Join rooms
       if (isAdmin) {
@@ -61,15 +67,47 @@ export function useSocket({
         socketRef.current?.emit('join-user', touristId);
         console.log(`👤 Joined user-${touristId} room`);
       }
+
+      // Users also join admin-room to receive other users' locations (for map display)
+      if (!isAdmin && touristId) {
+        socketRef.current?.emit('join-admin');
+        console.log('📍 User joined admin-room for other users location updates');
+      }
     });
 
-    socketRef.current.on('disconnect', () => {
-      console.log('❌ Socket.IO disconnected');
+    socketRef.current.on('disconnect', (reason) => {
+      console.log('❌ Socket.IO disconnected:', reason);
       isConnectedRef.current = false;
+      setConnectionState('disconnected');
+    });
+
+    socketRef.current.on('reconnect_attempt', (attemptNum: number) => {
+      reconnectAttemptsRef.current = attemptNum;
+      setConnectionState('reconnecting');
+      console.log(`🔄 Reconnecting to Socket.IO (attempt ${attemptNum}/10)...`);
+    });
+
+    socketRef.current.on('reconnect', () => {
+      console.log('✅ Socket.IO reconnected successfully');
+      setConnectionState('connected');
+      
+      // Re-join rooms after reconnect
+      if (isAdmin) {
+        socketRef.current?.emit('join-admin');
+      }
+      if (touristId) {
+        socketRef.current?.emit('join-user', touristId);
+        socketRef.current?.emit('join-admin');
+      }
+    });
+
+    socketRef.current.on('reconnect_error', (error) => {
+      console.error('🔌 Socket.IO reconnection error:', error.message);
     });
 
     socketRef.current.on('connect_error', (error) => {
       console.error('🔌 Socket.IO connection error:', error.message);
+      setConnectionState('disconnected');
     });
 
     // Listen for location updates from other users (admin only)
@@ -85,14 +123,15 @@ export function useSocket({
     });
 
     return () => {
+      // Cleanup: Don't disconnect on unmount, just remove listeners
+      // Socket.IO will handle reconnection automatically
       if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
-        isConnectedRef.current = false;
-        console.log('🔌 Socket.IO disconnected');
+        socketRef.current.removeAllListeners();
+        // Keep connection alive for faster reconnection
+        console.log('🔌 Socket.IO listeners removed (connection kept alive)');
       }
     };
-  }, [enabled, isAdmin, touristId, onLocationUpdate, onMyLocationUpdate]);
+  }, [enabled, isAdmin, touristId]);
 
   // Check connection status
   const isConnected = useCallback(() => isConnectedRef.current, []);
@@ -103,5 +142,6 @@ export function useSocket({
   return {
     isConnected,
     getSocket,
+    connectionState,
   };
 }

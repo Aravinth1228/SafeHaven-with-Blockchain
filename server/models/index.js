@@ -73,7 +73,6 @@ const userLocationSchema = new mongoose.Schema({
   username: String,
   lat: Number,
   lng: Number,
-  address: String,  // Full address from reverse geocoding
   status: { type: String, enum: ['safe', 'alert', 'danger'], default: 'safe' },
   updated_at: { type: Date, default: Date.now }
 });

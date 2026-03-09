@@ -650,19 +650,56 @@ router.post('/delete-tourist', async (req, res) => {
 
     console.log('🗑️ Deleting tourist from blockchain:', wallet_address);
 
+    // Check if tourist exists on blockchain first
+    try {
+      const touristExists = await relayer.isRegistered(wallet_address);
+      if (!touristExists) {
+        console.log('⚠️ Tourist not found on blockchain, deleting from MongoDB only:', wallet_address);
+        // Delete from MongoDB only
+        await Profile.findOneAndDelete({ wallet_address });
+        return res.json({
+          success: true,
+          message: 'Tourist deleted from MongoDB only (not found on blockchain)',
+          blockchainDeleted: false,
+          mongodbDeleted: true
+        });
+      }
+    } catch (checkErr) {
+      console.warn('⚠️ Could not check tourist registration:', checkErr.message);
+      // Continue with delete attempt
+    }
+
     // Call deleteTourist on contract using admin wallet
-    const result = await relayer.deleteTourist(wallet_address);
+    try {
+      const result = await relayer.deleteTourist(wallet_address);
+      console.log('✅ Delete transaction confirmed:', result.txHash);
 
-    console.log('✅ Delete transaction confirmed:', result.txHash);
+      // Delete from MongoDB as well
+      await Profile.findOneAndDelete({ wallet_address });
 
-    // Delete from MongoDB as well
-    await Profile.findOneAndDelete({ wallet_address });
-
-    res.json({
-      success: true,
-      message: 'Tourist deleted from blockchain',
-      transactionHash: result.txHash
-    });
+      res.json({
+        success: true,
+        message: 'Tourist deleted from blockchain',
+        transactionHash: result.txHash,
+        blockchainDeleted: true,
+        mongodbDeleted: true
+      });
+    } catch (deleteErr) {
+      console.error('❌ Blockchain delete failed:', deleteErr.message);
+      
+      // If tourist not found on blockchain, delete from MongoDB only
+      if (deleteErr.message.includes('Tourist not found')) {
+        await Profile.findOneAndDelete({ wallet_address });
+        return res.json({
+          success: true,
+          message: 'Tourist deleted from MongoDB only (not found on blockchain)',
+          blockchainDeleted: false,
+          mongodbDeleted: true
+        });
+      }
+      
+      throw deleteErr;
+    }
 
   } catch (error) {
     console.error('Delete tourist error:', error);

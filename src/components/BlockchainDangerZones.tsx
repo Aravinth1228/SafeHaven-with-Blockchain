@@ -335,7 +335,7 @@ const BlockchainDangerZones: React.FC = () => {
                   id="lng"
                   type="number"
                   step="0.000001"
-                  placeholder="80.270718"
+                  placeholder="78.9629"
                   value={newZone.lng}
                   onChange={(e) => setNewZone({ ...newZone, lng: e.target.value })}
                 />

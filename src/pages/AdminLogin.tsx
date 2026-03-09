@@ -7,8 +7,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import MetaMaskGuide from '@/components/MetaMaskGuide';
 
-// ONLY THIS WALLET CAN ACCESS ADMIN DASHBOARD
-const ADMIN_WALLET_ADDRESS = '0x548cb269df02005590CF48fb031dD697e52aa201';
+// ─── ADMIN WALLET ─────────────────────────────────────────────────────────────
+// .env file-ல் VITE_ADMIN_WALLET_ADDRESS=0xYourWallet என்று set பண்ணுங்க.
+// .env இல்லன்னா fallback-ஆ hardcoded address use ஆகும்.
+const ADMIN_WALLET_ADDRESS =
+  import.meta.env.VITE_ADMIN_WALLET_ADDRESS || '0x548cb269df02005590CF48fb031dD697e52aa201';
 
 const AdminLogin: React.FC = () => {
   const navigate = useNavigate();
@@ -18,54 +21,67 @@ const AdminLogin: React.FC = () => {
 
   const [isVerifying, setIsVerifying] = useState(false);
 
+  // Already logged in → redirect
   useEffect(() => {
-    // Check if already verified
     const savedAdmin = localStorage.getItem('isAdmin');
-    if (savedAdmin === 'true') {
+    const savedWallet = (localStorage.getItem('adminWalletAddress') || '').toLowerCase();
+
+    if (savedAdmin === 'true' && savedWallet === ADMIN_WALLET_ADDRESS.toLowerCase()) {
       console.log('✅ Admin already verified, redirecting...');
       navigate('/admin');
+    } else if (savedAdmin === 'true' && savedWallet !== ADMIN_WALLET_ADDRESS.toLowerCase()) {
+      // Stale session from a different wallet — clear it
+      localStorage.removeItem('isAdmin');
+      localStorage.removeItem('adminWalletAddress');
     }
   }, [navigate]);
 
+  // Auto-verify when wallet connects
   useEffect(() => {
-    if (isConnected && walletAddress && isVerifying) {
-      handleVerifyAdmin();
+    if (isConnected && walletAddress && !isVerifying) {
+      const isMatch = walletAddress.toLowerCase() === ADMIN_WALLET_ADDRESS.toLowerCase();
+      if (isMatch) {
+        handleVerifyAdmin();
+      }
     }
-  }, [isConnected, walletAddress, isVerifying]);
+  }, [isConnected, walletAddress]);
 
   const handleVerifyAdmin = async () => {
     if (!walletAddress) return;
 
-    // Check if wallet matches admin wallet (case-insensitive)
+    // Wallet address check
     const isMatch = walletAddress.toLowerCase() === ADMIN_WALLET_ADDRESS.toLowerCase();
-    
+
     if (!isMatch) {
       toast({
-        title: 'Access Denied',
-        description: 'This wallet is not authorized as admin.',
+        title: '🚫 Access Denied',
+        description: `This wallet is not the admin wallet.\nAdmin: ${ADMIN_WALLET_ADDRESS.slice(0, 6)}...${ADMIN_WALLET_ADDRESS.slice(-4)}`,
         variant: 'destructive',
+        duration: 6000,
       });
       setIsVerifying(false);
       return;
     }
 
+    setIsVerifying(true);
+
     try {
       const isAdminVerified = await verifyAdminOnChain(walletAddress);
 
       if (isAdminVerified) {
-        console.log('✅ Admin verified successfully');
+        // Save verified wallet address alongside the flag
+        localStorage.setItem('isAdmin', 'true');
+        localStorage.setItem('adminWalletAddress', walletAddress.toLowerCase());
+
         toast({
-          title: 'Admin Verified!',
+          title: '✅ Admin Verified!',
           description: 'Redirecting to dashboard...',
         });
-        setTimeout(() => {
-          navigate('/admin');
-        }, 1000);
+        setTimeout(() => navigate('/admin'), 100);
       } else {
-        console.log('❌ Admin verification failed');
         toast({
-          title: 'Access Denied',
-          description: 'Verification failed.',
+          title: '🚫 Access Denied',
+          description: 'On-chain verification failed.',
           variant: 'destructive',
         });
         setIsVerifying(false);
@@ -107,10 +123,14 @@ const AdminLogin: React.FC = () => {
     );
   }
 
+  const isAuthorizedWallet =
+    walletAddress?.toLowerCase() === ADMIN_WALLET_ADDRESS.toLowerCase();
+
   return (
     <div className="min-h-screen pt-24 pb-12 flex items-center justify-center">
       <div className="container mx-auto px-4 max-w-md">
         <div className="glass-card rounded-2xl p-8 text-center">
+
           {/* Header */}
           <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-6">
             <Shield className="w-10 h-10 text-primary" />
@@ -122,7 +142,7 @@ const AdminLogin: React.FC = () => {
             Only authorized admin wallet can access
           </p>
 
-          {/* Admin Wallet Info */}
+          {/* Authorized Wallet Display */}
           <div className="p-4 rounded-xl bg-primary/10 border border-primary/30 mb-6">
             <p className="text-xs text-muted-foreground mb-1">Authorized Admin Wallet:</p>
             <p className="font-mono text-sm text-primary">
@@ -141,10 +161,12 @@ const AdminLogin: React.FC = () => {
                 <p className="font-mono text-sm text-muted-foreground">
                   {walletAddress?.slice(0, 10)}...{walletAddress?.slice(-8)}
                 </p>
-                {walletAddress?.toLowerCase() === ADMIN_WALLET_ADDRESS.toLowerCase() ? (
+                {isAuthorizedWallet ? (
                   <p className="text-xs text-success mt-2">✅ Authorized Wallet</p>
                 ) : (
-                  <p className="text-xs text-destructive mt-2">❌ Not Authorized</p>
+                  <p className="text-xs text-destructive mt-2">
+                    🚫 Not Authorized — Wrong wallet connected
+                  </p>
                 )}
               </div>
 
@@ -159,11 +181,20 @@ const AdminLogin: React.FC = () => {
                 <Button
                   className="btn-gradient w-full py-4 rounded-xl"
                   onClick={handleVerifyAdmin}
-                  disabled={walletAddress?.toLowerCase() !== ADMIN_WALLET_ADDRESS.toLowerCase()}
+                  disabled={!isAuthorizedWallet}
                 >
                   <Shield className="w-5 h-5 mr-2" />
                   Verify Admin Access
                 </Button>
+              )}
+
+              {/* Wrong wallet warning */}
+              {!isAuthorizedWallet && (
+                <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-left">
+                  <p className="text-xs text-destructive">
+                    ⚠️ Switch to the admin wallet in MetaMask and reconnect.
+                  </p>
+                </div>
               )}
             </div>
           ) : (
@@ -185,10 +216,12 @@ const AdminLogin: React.FC = () => {
                 <p className="text-sm font-medium mb-1">Admin Access Required</p>
                 <p className="text-xs text-muted-foreground">
                   Only the pre-authorized wallet address can access the admin dashboard.
+                  Wrong wallet connect பண்ணா login button disable ஆகும்.
                 </p>
               </div>
             </div>
           </div>
+
         </div>
       </div>
     </div>

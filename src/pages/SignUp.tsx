@@ -238,6 +238,27 @@ const SignUp: React.FC = () => {
         description: 'Saving your profile to database...',
       });
 
+      // Get current location for initial registration
+      let currentLat: number | undefined;
+      let currentLng: number | undefined;
+
+      try {
+        // Try to get current location
+        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          });
+        });
+
+        currentLat = position.coords.latitude;
+        currentLng = position.coords.longitude;
+        // No reverse geocoding - only coordinates stored
+      } catch (err) {
+        console.warn('Could not get location for registration:', err);
+      }
+
       const success = await register(
         {
           username: formData.username,
@@ -247,7 +268,9 @@ const SignUp: React.FC = () => {
           walletAddress: walletAddress,
           touristId: blockchainResult.data?.touristId || '',
         },
-        formData.password
+        formData.password,
+        currentLat,
+        currentLng
       );
 
       if (!success) {
@@ -265,52 +288,16 @@ const SignUp: React.FC = () => {
         description: 'Welcome to SafeHaven!',
       });
 
-      // Redirect immediately without waiting for location
+      toast({
+        title: '📍 Next: Enable Location',
+        description: 'After redirect, please allow location access to start tracking',
+        duration: 5000,
+      });
+
+      // Redirect immediately (100ms for toast to show)
       setTimeout(() => {
         navigate('/dashboard');
-      }, 500);
-
-      // Capture location in background (non-blocking)
-      if ('geolocation' in navigator) {
-        navigator.geolocation.getCurrentPosition(
-          async (position) => {
-            const { latitude, longitude } = position.coords;
-            console.log('📍 Capturing initial location:', { latitude, longitude });
-
-            // Get the newly registered user
-            const currentUser = localStorage.getItem('currentUser');
-            if (currentUser) {
-              const user = JSON.parse(currentUser);
-              try {
-                // Send initial location to backend
-                await fetch('http://localhost:3000/api/locations', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    user_id: user.id,
-                    tourist_id: user.touristId,
-                    lat: latitude,
-                    lng: longitude,
-                    username: user.username,
-                    status: 'safe',
-                  }),
-                });
-                console.log('✅ Initial location saved to backend');
-              } catch (err) {
-                console.error('Failed to save initial location:', err);
-              }
-            }
-          },
-          (error) => {
-            console.log('⚠️ Location permission denied or unavailable:', error.message);
-          },
-          {
-            enableHighAccuracy: false,
-            timeout: 5000,
-            maximumAge: 0,
-          }
-        );
-      }
+      }, 100);
     } catch (error: any) {
       console.error('Registration error:', error);
 

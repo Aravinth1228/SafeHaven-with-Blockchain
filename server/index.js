@@ -29,19 +29,89 @@ const connectedClients = new Map();
 
 io.on('connection', (socket) => {
   console.log('🔌 Client connected:', socket.id);
-  
+
   // Join admin room for real-time updates
   socket.on('join-admin', () => {
     socket.join('admin-room');
     console.log('📊 Admin joined real-time updates');
   });
-  
+
   // Join user room (for receiving their own updates)
   socket.on('join-user', (touristId) => {
     socket.join(`user-${touristId}`);
     console.log(`👤 User ${touristId} joined their room`);
   });
-  
+
+  // Handle location update from user via Socket.IO
+  socket.on('location-update', async (locationData) => {
+    const { user_id, tourist_id, lat, lng, username, status } = locationData;
+
+    console.log('📡 Socket.IO location update received:', {
+      user_id,
+      tourist_id,
+      lat: lat?.toFixed(6),
+      lng: lng?.toFixed(6),
+      username,
+      status,
+    });
+
+    // Update location in database
+    try {
+      let location = await UserLocation.findOne({ user_id });
+      if (location) {
+        location.lat = lat;
+        location.lng = lng;
+        if (status) location.status = status;
+        location.updated_at = new Date();
+        await location.save();
+      } else {
+        location = await UserLocation.create({
+          user_id,
+          tourist_id,
+          lat,
+          lng,
+          username: username || 'Unknown',
+          status: status || 'safe',
+          updated_at: new Date()
+        });
+      }
+
+      // Update profile status if provided
+      if (status) {
+        await Profile.findOneAndUpdate(
+          { user_id },
+          { status, updated_at: new Date() }
+        );
+      }
+
+      // Broadcast to all admins in admin-room
+      io.to('admin-room').emit('location-update', {
+        user_id,
+        tourist_id,
+        lat,
+        lng,
+        username: username || 'Unknown',
+        status: status || 'safe',
+        updated_at: new Date().toISOString()
+      });
+
+      // Also emit back to the user
+      io.to(`user-${tourist_id}`).emit('my-location-update', {
+        user_id,
+        tourist_id,
+        lat,
+        lng,
+        username: username || 'Unknown',
+        status: status || 'safe',
+        updated_at: new Date().toISOString()
+      });
+
+      console.log('📡 Broadcasted location to admin-room and user room');
+    } catch (error) {
+      console.error('❌ Error processing Socket.IO location update:', error);
+    }
+  });
+
   // Handle disconnect
   socket.on('disconnect', () => {
     console.log('🔌 Client disconnected:', socket.id);
@@ -182,44 +252,32 @@ app.patch('/api/users/:userId/status', async (req, res) => {
   }
 });
 
-// Get all danger zones - NOW FROM BLOCKCHAIN
+// Get all danger zones - MongoDB First (Blockchain Optional)
 app.get('/api/danger-zones', async (req, res) => {
   try {
-    // Check if blockchain relayer is initialized
-    if (!relayer.isInitialized()) {
-      return res.status(503).json({
-        success: false,
-        error: 'Blockchain not initialized',
-        blockchainEnabled: false
-      });
-    }
-
-    // Get all danger zones from blockchain
-    const zones = await relayer.getAllDangerZones();
-
-    // Level enum mapping (0=Low, 1=Medium, 2=High, 3=Critical)
-    const levelNames = ['Low', 'Medium', 'High', 'Critical'];
-
-    // Format zones for frontend
-    const formattedZones = zones.map((zone, index) => ({
-      id: zone.zoneId || `zone-${index}`,
-      blockchainIndex: index,
-      zoneId: zone.zoneId,
-      name: zone.name,
-      lat: Number(zone.latitude) / 1e6, // Convert from int256 * 1e6
-      lng: Number(zone.longitude) / 1e6,
-      radius: Number(zone.radius),
-      level: levelNames[parseInt(zone.level)] || 'Medium',
-      createdBy: zone.createdBy,
-      createdAt: new Date(Number(zone.createdAt) * 1000),
-      isActive: zone.isActive
-    }));
+    // Get danger zones from MongoDB first (primary source)
+    const mongoZones = await DangerZone.find().sort({ created_at: -1 });
+    
+    console.log('📊 Loaded danger zones from MongoDB:', mongoZones.length);
 
     res.json({
       success: true,
-      data: formattedZones,
-      blockchainEnabled: true,
-      count: formattedZones.length
+      data: mongoZones.map(zone => ({
+        id: zone._id,
+        name: zone.name,
+        lat: zone.lat,
+        lng: zone.lng,
+        radius: zone.radius,
+        level: zone.level,
+        created_by: zone.created_by,
+        blockchain_zone_id: zone.blockchain_zone_id,
+        blockchain_tx_hash: zone.blockchain_tx_hash,
+        created_at: zone.created_at,
+        isActive: true
+      })),
+      blockchainEnabled: relayer.isInitialized(),
+      count: mongoZones.length,
+      source: 'mongodb'
     });
   } catch (error) {
     console.error('Error getting danger zones:', error);
@@ -227,19 +285,10 @@ app.get('/api/danger-zones', async (req, res) => {
   }
 });
 
-// Create danger zone - NOW ON BLOCKCHAIN
+// Create danger zone - MongoDB First (Blockchain Optional)
 app.post('/api/danger-zones', async (req, res) => {
   try {
     const { name, lat, lng, radius, level, created_by } = req.body;
-
-    // Check if blockchain relayer is initialized
-    if (!relayer.isInitialized()) {
-      return res.status(503).json({
-        success: false,
-        error: 'Blockchain not initialized',
-        blockchainEnabled: false
-      });
-    }
 
     // Validate input
     if (!name || lat === undefined || lng === undefined || !radius || !level) {
@@ -249,28 +298,63 @@ app.post('/api/danger-zones', async (req, res) => {
       });
     }
 
-    // Convert coordinates to int256 * 1e6 format for blockchain
-    const latInt = Math.round(lat * 1e6);
-    const lngInt = Math.round(lng * 1e6);
-
-    // Convert level string to enum number (Low=0, Medium=1, High=2, Critical=3)
-    const levelEnum = { 'Low': 0, 'Medium': 1, 'High': 2, 'Critical': 3 }[level] || 1;
-
-    // Create danger zone on blockchain
-    const blockchainResult = await relayer.createDangerZoneDirect(
-      created_by || process.env.ADMIN_WALLET,
+    // Step 1: Create danger zone in MongoDB (ALWAYS)
+    const dangerZone = await DangerZone.create({
       name,
-      latInt,
-      lngInt,
+      lat,
+      lng,
       radius,
-      levelEnum
-    );
+      level,
+      created_by: created_by || 'admin',
+      blockchain_zone_id: null,
+      blockchain_tx_hash: null
+    });
 
-    // Check if any users are inside or near this new zone (for notifications only)
+    console.log('✅ Danger zone created in MongoDB:', dangerZone._id);
+
+    // Step 2: Try to create on blockchain (OPTIONAL - don't fail if it errors)
+    let blockchainResult = null;
+    let blockchainEnabled = false;
+
+    if (relayer.isInitialized()) {
+      try {
+        // Convert coordinates to int256 * 1e6 format for blockchain
+        const latInt = Math.round(lat * 1e6);
+        const lngInt = Math.round(lng * 1e6);
+
+        // Convert level string to enum number (Low=0, Medium=1, High=2, Critical=3)
+        const levelEnum = { 'Low': 0, 'Medium': 1, 'High': 2, 'Critical': 3 }[level] || 1;
+
+        // Create danger zone on blockchain
+        blockchainResult = await relayer.createDangerZoneDirect(
+          created_by || process.env.ADMIN_WALLET,
+          name,
+          latInt,
+          lngInt,
+          radius,
+          levelEnum
+        );
+
+        // Update MongoDB with blockchain info
+        await DangerZone.findByIdAndUpdate(dangerZone._id, {
+          blockchain_zone_id: blockchainResult?.zoneId,
+          blockchain_tx_hash: blockchainResult?.txHash
+        });
+
+        blockchainEnabled = true;
+        console.log('✅ Danger zone also created on blockchain:', blockchainResult?.txHash);
+      } catch (blockchainErr) {
+        console.warn('⚠️ Blockchain creation failed (zone still created in MongoDB):', blockchainErr.message);
+        // Don't fail - MongoDB creation succeeded
+      }
+    } else {
+      console.log('⚠️ Blockchain not initialized - zone created in MongoDB only');
+    }
+
+    // Step 3: Check if any users are inside or near this new zone (for notifications)
     const users = await UserLocation.find();
     const notifications = [];
     const updatedUsers = [];
-    const emergencyAlerts = [];
 
     for (const user of users) {
       const distance = calculateDistance(user.lat, user.lng, lat, lng);
@@ -283,7 +367,7 @@ app.post('/api/danger-zones', async (req, res) => {
           { status: 'danger', updated_at: new Date() }
         );
 
-        // Create emergency alert in MongoDB (for display purposes)
+        // Create emergency alert in MongoDB
         const alert = await Alert.create({
           user_id: user.user_id,
           tourist_id: user.tourist_id,
@@ -294,20 +378,7 @@ app.post('/api/danger-zones', async (req, res) => {
           lng: user.lng,
           zone_name: name,
           zone_level: level,
-          blockchain_zone_id: blockchainResult?.zoneId,
-          blockchain_tx_hash: blockchainResult?.txHash
         });
-        emergencyAlerts.push(alert);
-
-        // Send emergency notification
-        const notification = await Notification.create({
-          tourist_id: user.tourist_id,
-          user_id: user.user_id,
-          admin_wallet: created_by || 'admin',
-          message: `🚨 EMERGENCY! You are inside danger zone "${name}". Exit immediately!`,
-          notification_type: 'danger',
-        });
-        notifications.push(notification);
         updatedUsers.push(user.username);
 
         console.log(`🚨 EMERGENCY: User ${user.username} is INSIDE ${name} - Status set to DANGER`);
@@ -330,27 +401,27 @@ app.post('/api/danger-zones', async (req, res) => {
     res.json({
       success: true,
       data: {
-        id: blockchainResult?.zoneId,
-        blockchainIndex: blockchainResult?.zoneIndex,
-        zoneId: blockchainResult?.zoneId,
+        id: dangerZone._id,
         name,
         lat,
         lng,
         radius,
         level,
-        createdBy: created_by,
+        created_by: created_by || 'admin',
         isActive: true
       },
-      blockchain: {
-        txHash: blockchainResult?.txHash,
-        blockNumber: blockchainResult?.blockNumber,
-        zoneId: blockchainResult?.zoneId
-      },
+      blockchain: blockchainResult ? {
+        txHash: blockchainResult.txHash,
+        blockNumber: blockchainResult.blockNumber,
+        zoneId: blockchainResult.zoneId
+      } : null,
+      blockchainEnabled,
       notifications: notifications.length,
       emergencyUsers: updatedUsers.length,
       emergencyUsernames: updatedUsers,
-      blockchainEnabled: true,
-      message: 'Danger zone created on blockchain'
+      message: blockchainEnabled 
+        ? 'Danger zone created in MongoDB + Blockchain' 
+        : 'Danger zone created in MongoDB only (blockchain not available)'
     });
   } catch (error) {
     console.error('Create danger zone error:', error);
@@ -358,36 +429,54 @@ app.post('/api/danger-zones', async (req, res) => {
   }
 });
 
-// Delete danger zone - FROM BLOCKCHAIN
+// Delete danger zone - MongoDB First (Blockchain Optional)
 app.delete('/api/danger-zones/:id', async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Extract blockchain index from id (format: "zone-{index}")
-    const blockchainIndex = parseInt(id.replace('zone-', ''));
+    console.log('🗑️ Deleting danger zone from MongoDB:', id);
+
+    // Delete from MongoDB first (ALWAYS)
+    const mongoResult = await DangerZone.findByIdAndDelete(id);
     
-    if (isNaN(blockchainIndex)) {
-      return res.status(400).json({ success: false, error: 'Invalid zone ID format' });
+    if (!mongoResult) {
+      return res.status(404).json({ success: false, error: 'Danger zone not found in MongoDB' });
     }
 
-    // Remove danger zone from blockchain
-    const result = await relayer.removeDangerZone(process.env.ADMIN_WALLET, blockchainIndex);
+    console.log('✅ Danger zone deleted from MongoDB:', id);
+
+    // Try to delete from blockchain (OPTIONAL)
+    let blockchainDeleted = false;
+    let blockchainResult = null;
+
+    if (relayer.isInitialized() && mongoResult.blockchain_zone_id) {
+      try {
+        // Extract blockchain index from zone ID
+        const blockchainIndex = parseInt(mongoResult.blockchain_zone_id.replace('ZONE-', ''));
+        
+        if (!isNaN(blockchainIndex)) {
+          blockchainResult = await relayer.removeDangerZone(process.env.ADMIN_WALLET, blockchainIndex);
+          blockchainDeleted = true;
+          console.log('✅ Danger zone also deleted from blockchain:', blockchainResult?.txHash);
+        }
+      } catch (blockchainErr) {
+        console.warn('⚠️ Blockchain deletion failed (zone already deleted from MongoDB):', blockchainErr.message);
+        // Don't fail - MongoDB deletion succeeded
+      }
+    }
 
     res.json({
       success: true,
-      data: {
-        blockchainIndex,
-        removed: true
-      },
-      blockchain: {
-        txHash: result?.txHash,
-        blockNumber: result?.blockNumber
-      },
-      blockchainEnabled: true,
-      message: 'Danger zone removed from blockchain'
+      message: 'Danger zone deleted',
+      mongodbDeleted: true,
+      blockchainDeleted,
+      blockchain: blockchainResult ? {
+        txHash: blockchainResult.txHash,
+        blockNumber: blockchainResult.blockNumber
+      } : null
     });
   } catch (error) {
-    console.error('Remove danger zone error:', error);
+    console.error('Delete danger zone error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -420,7 +509,7 @@ app.patch('/api/alerts/:alertId/dismiss', async (req, res) => {
 // Update user location
 app.post('/api/locations', async (req, res) => {
   try {
-    const { user_id, tourist_id, lat, lng, username, status, address } = req.body;
+    const { user_id, tourist_id, lat, lng, username, status } = req.body;
 
     console.log('📍 Location update received:', {
       user_id,
@@ -428,16 +517,10 @@ app.post('/api/locations', async (req, res) => {
       lat,
       lng,
       username: username || 'NOT_PROVIDED',
-      status,
-      address: address || 'NOT_PROVIDED'
+      status
     });
-    
-    // Log if location looks like Chennai (debugging)
-    if (Math.abs(lat - 13.0827) < 0.1 && Math.abs(lng - 80.2707) < 0.1) {
-      console.log('⚠️ WARNING: Location appears to be Chennai (fake location detected)');
-    } else {
-      console.log('✅ Real GPS location detected:', lat.toFixed(6), lng.toFixed(6));
-    }
+
+    console.log('📍 Processing location:', lat.toFixed(6), lng.toFixed(6));
 
     // Upsert location
     let location = await UserLocation.findOne({ user_id });
@@ -445,7 +528,6 @@ app.post('/api/locations', async (req, res) => {
       location.lat = lat;
       location.lng = lng;
       if (status) location.status = status;
-      if (address) location.address = address;  // Save address
       location.updated_at = new Date();
       await location.save();
     } else {
@@ -455,7 +537,6 @@ app.post('/api/locations', async (req, res) => {
         lat,
         lng,
         username: username || 'Unknown',
-        address: address || '',  // Save address
         status: status || 'safe'
       });
     }
@@ -476,14 +557,13 @@ app.post('/api/locations', async (req, res) => {
       lat,
       lng,
       username: username || 'Unknown',
-      address: address || '',  // Include address
       status: status || 'safe',
       updated_at: new Date().toISOString()
     };
 
     // Emit to all admins in admin-room
     io.to('admin-room').emit('location-update', locationData);
-    console.log('📡 Emitted location update to admin-room:', locationData.username, locationData.address);
+    console.log('📡 Emitted location update to admin-room:', locationData.username);
 
     // Emit to the user themselves
     io.to(`user-${tourist_id}`).emit('my-location-update', locationData);
@@ -582,7 +662,7 @@ app.post('/api/locations', async (req, res) => {
 // Register new user/tourist profile
 app.post('/api/register', async (req, res) => {
   try {
-    const { username, email, phone, dob, wallet_address, tourist_id, user_id, password } = req.body;
+    const { username, email, phone, dob, wallet_address, tourist_id, user_id, password, lat, lng } = req.body;
 
     // Check if wallet address already exists
     const existingWallet = await Profile.findOne({ wallet_address });
@@ -597,10 +677,29 @@ app.post('/api/register', async (req, res) => {
     const existingUsername = await Profile.findOne({
       username: { $regex: new RegExp(`^${username}$`, 'i') }
     });
+
+    // If username exists but with different wallet, update the wallet address
     if (existingUsername) {
-      return res.status(400).json({
-        success: false,
-        error: 'Username already taken'
+      console.log('⚠️ Username exists, updating wallet address for:', existingUsername.username);
+
+      // Update the existing user's wallet address and other details
+      const updatedProfile = await Profile.findOneAndUpdate(
+        { _id: existingUsername._id },
+        {
+          wallet_address,
+          email: email || existingUsername.email,
+          phone: phone || existingUsername.phone,
+          dob: dob || existingUsername.dob,
+          password: password || existingUsername.password,
+          updated_at: new Date()
+        },
+        { new: true }
+      );
+
+      return res.json({
+        success: true,
+        data: updatedProfile,
+        message: 'Existing user updated with new wallet address'
       });
     }
 
@@ -627,6 +726,36 @@ app.post('/api/register', async (req, res) => {
       wallet_address,
       status: 'safe',
     });
+
+    // 📍 Store initial location if provided
+    if (lat !== undefined && lng !== undefined) {
+      await UserLocation.create({
+        user_id: finalUserId,
+        tourist_id: finalTouristId,
+        lat,
+        lng,
+        username,
+        status: 'safe',
+        updated_at: new Date()
+      });
+
+      console.log('📍 Initial location stored for user:', username, { lat, lng });
+
+      // 🚀 Emit initial location via Socket.IO to admins
+      const locationData = {
+        user_id: finalUserId,
+        tourist_id: finalTouristId,
+        lat,
+        lng,
+        username: username || 'Unknown',
+        status: 'safe',
+        updated_at: new Date().toISOString()
+      };
+
+      // Emit to all admins in admin-room
+      io.to('admin-room').emit('location-update', locationData);
+      console.log('📡 Emitted initial location to admin-room:', username);
+    }
 
     res.json({ success: true, data: profile });
   } catch (error) {
@@ -674,6 +803,49 @@ app.post('/api/login', async (req, res) => {
       message: 'Login successful'
     });
   } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Delete user from MongoDB (profile, alerts, locations, notifications)
+app.delete('/api/users/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    console.log('🗑️ Deleting user from MongoDB:', userId);
+
+    // Delete user profile
+    const profileResult = await Profile.deleteOne({ user_id: userId });
+    console.log('✅ Profile deleted:', profileResult.deletedCount);
+
+    // Delete all user's alerts
+    const alertsResult = await Alert.deleteMany({ user_id: userId });
+    console.log('✅ Alerts deleted:', alertsResult.deletedCount);
+
+    // Delete user's location
+    const locationsResult = await UserLocation.deleteOne({ user_id: userId });
+    console.log('✅ Location deleted:', locationsResult.deletedCount ? 1 : 0);
+
+    // Delete user's notifications
+    const profile = await Profile.findOne({ user_id: userId });
+    let notificationsResult = { deletedCount: 0 };
+    if (profile) {
+      notificationsResult = await Notification.deleteMany({ tourist_id: profile.tourist_id });
+      console.log('✅ Notifications deleted:', notificationsResult.deletedCount);
+    }
+
+    res.json({
+      success: true,
+      message: 'User deleted from MongoDB',
+      deleted: {
+        profile: profileResult.deletedCount,
+        alerts: alertsResult.deletedCount,
+        locations: locationsResult.deletedCount ? 1 : 0,
+        notifications: notificationsResult.deletedCount,
+      }
+    });
+  } catch (error) {
+    console.error('Delete user error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

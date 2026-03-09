@@ -26,7 +26,7 @@ interface AuthContextType {
   verifyAdminOnChain: (walletAddress: string) => Promise<boolean>;
   adminLogout: () => void;
   logout: () => void;
-  register: (userData: Omit<User, 'id' | 'touristId' | 'status' | 'createdAt'>, password: string) => Promise<boolean>;
+  register: (userData: Omit<User, 'id' | 'touristId' | 'status' | 'createdAt'>, password: string, lat?: number, lng?: number) => Promise<boolean>;
   updateStatus: (status: 'safe' | 'alert' | 'danger') => Promise<void>;
   getAllUsers: () => User[];
   getUserLocations: () => { touristId: string; username: string; lat: number; lng: number; status: 'safe' | 'alert' | 'danger' }[];
@@ -207,7 +207,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const register = async (
     userData: Omit<User, 'id' | 'touristId' | 'status' | 'createdAt'>,
-    password: string
+    password: string,
+    lat?: number,
+    lng?: number
   ): Promise<boolean> => {
     try {
       const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
@@ -226,7 +228,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           wallet_address: userData.walletAddress,
           password: password,
           tourist_id: touristId,
-          user_id: ''
+          user_id: '',
+          lat,
+          lng
         })
       });
 
@@ -234,26 +238,26 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
       if (!response.ok || !result.success) {
         console.error('❌ MongoDB registration failed:', result.error);
-        
+
         // If username already exists, try to login with the existing user
         if (result.error && result.error.includes('Username already taken')) {
           console.log('⚠️ Username already exists, fetching existing user...');
-          
+
           // Fetch all users to find the matching username
           const usersResponse = await fetch(`${apiBaseUrl}/users`);
           const usersResult = await usersResponse.json();
-          
+
           if (usersResult.success) {
             const existingUser = usersResult.data?.find(
               (u: any) => u.username?.toLowerCase() === userData.username.toLowerCase()
             );
-            
+
             if (existingUser) {
               // Update wallet address for existing user if it doesn't match
               if (existingUser.wallet_address?.toLowerCase() !== userData.walletAddress.toLowerCase()) {
                 console.log('⚠️ Wallet mismatch - user may have registered with different wallet');
               }
-              
+
               // Create user object from existing data
               const newUser: User = {
                 id: existingUser._id || existingUser.user_id,
@@ -266,7 +270,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
                 status: existingUser.status || 'safe',
                 createdAt: existingUser.created_at || new Date().toISOString(),
               };
-              
+
               setUser(newUser);
               localStorage.setItem('currentUser', JSON.stringify(newUser));
               console.log('✅ Using existing user from MongoDB');
@@ -274,7 +278,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
             }
           }
         }
-        
+
         return false;
       }
 
@@ -355,9 +359,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     const users = getAllUsers();
     return users.map((u) => {
       const savedLocation = JSON.parse(localStorage.getItem(`userLocation-${u.touristId}`) || 'null');
-      
-      // Only return location if it exists in localStorage (real GPS)
-      // Don't generate fake locations
+
+      // Return location if it exists in localStorage
       if (savedLocation && savedLocation.lat && savedLocation.lng) {
         return {
           touristId: u.touristId,
@@ -367,8 +370,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           status: u.status,
         };
       }
-      
-      // Return null location if no GPS data available (user hasn't logged in yet)
+
+      // Return null location if no GPS data available
       return {
         touristId: u.touristId,
         username: u.username,

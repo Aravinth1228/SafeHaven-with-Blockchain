@@ -28,7 +28,7 @@ import { useWallet } from '@/contexts/WalletContext';
 import { useContract } from '@/hooks/useContract';
 import { contractService } from '@/lib/contract/contractService';
 import { useToast } from '@/hooks/use-toast';
-import MapLibreMap from '@/components/MapLibreMap';
+import LeafletMap from '@/components/LeafletMap';
 import { useRealtimeAlerts } from '@/hooks/useRealtimeAlerts';
 import { useRealtimeLocations } from '@/hooks/useRealtimeLocations';
 import { useRealtimeProfiles } from '@/hooks/useRealtimeProfiles';
@@ -82,8 +82,10 @@ interface UserLocation {
   id?: string;
   user_id: string;
   tourist_id: string;
+  username?: string;   // ← Fix: was missing, caused "Unknown" on map
   lat: number;
   lng: number;
+  address?: string;    // ← Fix: was missing, caused TypeScript error
   status?: string;
   updated_at?: string;
 }
@@ -116,6 +118,10 @@ const AdminDashboard: React.FC = () => {
   const [editingZone, setEditingZone] = useState<DangerZone | null>(null);
   const [showEditZone, setShowEditZone] = useState(false);
   const [editZoneData, setEditZoneData] = useState({ name: '', radius: '', level: '' });
+
+  // Selected user on map
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [mapHeight, setMapHeight] = useState<'normal' | 'expanded'>('normal');
 
   // Notification state
   const [notifyTarget, setNotifyTarget] = useState<Profile | null>(null);
@@ -292,7 +298,7 @@ const AdminDashboard: React.FC = () => {
     enabled: true,
     isAdmin: true,
     onLocationUpdate: (location) => {
-      console.log('⚡ Real-time socket location update:', location.username, location.address);
+      console.log('⚡ Real-time socket location update:', location.username);
       setUserLocations(prev => {
         const existingIndex = prev.findIndex(l => l.user_id === location.user_id || l.tourist_id === location.tourist_id);
         if (existingIndex >= 0) {
@@ -302,7 +308,6 @@ const AdminDashboard: React.FC = () => {
             lat: location.lat,
             lng: location.lng,
             status: location.status,
-            address: location.address,  // Update address
             updated_at: location.updated_at,
           };
           return updated;
@@ -351,18 +356,43 @@ const AdminDashboard: React.FC = () => {
     enabled: true,
   });
 
+  // ─── ADMIN WALLET WHITELIST ─────────────────────────────────────────────
+  // Only this wallet address can access the admin dashboard.
+  // Set VITE_ADMIN_WALLET_ADDRESS in your .env file.
+  const ADMIN_WALLET = (import.meta.env.VITE_ADMIN_WALLET_ADDRESS || '').toLowerCase();
+
   // Check admin auth and load data
   useEffect(() => {
     const checkAdminAuth = async () => {
       const isAdmin = localStorage.getItem('isAdmin');
+      const savedWallet = (localStorage.getItem('adminWalletAddress') || '').toLowerCase();
+
+      // Step 1: basic session flag check
       if (isAdmin !== 'true') {
         navigate('/admin-login');
         return;
       }
+
+      // Step 2: wallet address whitelist check
+      if (ADMIN_WALLET && savedWallet !== ADMIN_WALLET) {
+        toast({
+          title: '🚫 Access Denied',
+          description: 'Your wallet address is not authorized as admin.',
+          variant: 'destructive',
+          duration: 6000,
+        });
+        // Clear invalid session
+        localStorage.removeItem('isAdmin');
+        localStorage.removeItem('adminWalletAddress');
+        navigate('/admin-login');
+        return;
+      }
+
       await loadData();
     };
-    
+
     checkAdminAuth();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate, loadData]);
 
   const handleLogout = () => {
@@ -402,7 +432,7 @@ const AdminDashboard: React.FC = () => {
   };
 
   const handleDeleteUser = async (user: Profile) => {
-    if (!confirm(`Delete ${user.username} from blockchain?\n\n⚠️ This action cannot be undone!\n\nThe user will be permanently removed from the blockchain.`)) {
+    if (!confirm(`Delete ${user.username} permanently?\n\n⚠️ This action cannot be undone!\n\nThis will:\n- Delete user from Blockchain\n- Delete from MongoDB\n- Remove all alerts\n- Clear location history\n- Remove all notifications`)) {
       return;
     }
 
@@ -417,41 +447,84 @@ const AdminDashboard: React.FC = () => {
         return;
       }
 
-      console.log('🗑️ Deleting user from blockchain:', user.wallet_address);
+      // Check if admin wallet is connected
+      if (!walletAddress) {
+        toast({
+          title: 'Error',
+          description: 'Admin wallet not connected. Please connect your admin wallet.',
+          variant: 'destructive',
+        });
+        return;
+      }
 
-      // Call API to delete tourist from blockchain
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/blockchain/danger-zones/delete-tourist`, {
+      console.log('🗑️ Deleting user:', user.username);
+      console.log('📍 Wallet:', user.wallet_address);
+
+      // Step 1: Delete from blockchain
+      console.log('⛓️  Step 1: Deleting from blockchain...');
+      const blockchainResponse = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/blockchain/delete-tourist`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           wallet_address: user.wallet_address,
+          admin_wallet: walletAddress,
         }),
       });
 
-      const result = await response.json();
+      const blockchainResult = await blockchainResponse.json();
 
-      if (result.success) {
-        // Remove from local state
-        setUsers(prev => prev.filter(u => u.user_id !== user.user_id));
-
-        toast({
-          title: 'User Deleted',
-          description: `${user.username} has been deleted from blockchain.`,
-        });
-
-        // Reload data to reflect changes
-        setTimeout(() => loadData(), 1000);
-      } else {
-        throw new Error(result.error || 'Failed to delete user');
+      if (!blockchainResult.success) {
+        throw new Error(blockchainResult.error || 'Failed to delete from blockchain');
       }
+
+      console.log('✅ Blockchain deletion successful:', blockchainResult.transactionHash);
+
+      // Step 2: Delete from MongoDB (profile, alerts, locations, notifications)
+      console.log('📊 Step 2: Deleting from MongoDB...');
+      const mongoResponse = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api'}/users/${user.user_id}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const mongoResult = await mongoResponse.json();
+      console.log('✅ MongoDB deletion successful');
+
+      // Step 3: Remove from UI immediately
+      console.log('🖼️  Step 3: Updating UI...');
+      
+      // Remove from users list
+      setUsers(prev => prev.filter(u => u.user_id !== user.user_id));
+      
+      // Remove from user locations
+      setUserLocations(prev => prev.filter(loc => loc.tourist_id !== user.tourist_id && loc.user_id !== user.user_id));
+      
+      // Remove user's alerts
+      setAlerts(prev => prev.filter(a => a.tourist_id !== user.tourist_id && a.user_id !== user.user_id));
+
+      console.log('✅ UI updated successfully');
+
+      toast({
+        title: '✅ User Deleted Successfully',
+        description: `${user.username} has been deleted from blockchain and database.`,
+      });
+
+      // Step 4: Reload data to sync (optional, since we already updated UI)
+      setTimeout(() => {
+        loadData();
+        console.log('🔄 Data reloaded from backend');
+      }, 2000);
+
     } catch (error) {
       console.error('Delete error:', error);
       toast({
-        title: 'Error',
+        title: '❌ Delete Failed',
         description: error instanceof Error ? error.message : 'Failed to delete user',
         variant: 'destructive',
+        duration: 10000,
       });
     }
   };
@@ -725,7 +798,7 @@ const AdminDashboard: React.FC = () => {
   // Registered tourists - Only show users from blockchain or MongoDB, NOT from alerts only
   const displayUsers = users.length > 0 ? users : [];
 
-  // Format locations for map
+  // Format locations for map - Show ALL locations
   const mapLocations = (() => {
     const merged: Record<string, { touristId: string; username: string; lat: number; lng: number; status: 'safe' | 'alert' | 'danger'; address?: string }> = {};
 
@@ -736,10 +809,10 @@ const AdminDashboard: React.FC = () => {
         console.log('⚠️ Skipping location without coordinates:', loc);
         continue;
       }
-      
+
       const profile = displayUsers.find(u => u.tourist_id === loc.tourist_id);
       const statusFromProfile = profile?.status as 'safe' | 'alert' | 'danger';
-      
+
       merged[loc.tourist_id] = {
         touristId: loc.tourist_id,
         username: profile?.username || loc.username || loc.tourist_id,
@@ -748,8 +821,8 @@ const AdminDashboard: React.FC = () => {
         address: loc.address,  // Include address for map display
         status: statusFromProfile || (loc.status || 'safe') as 'safe' | 'alert' | 'danger',
       };
-      
-      console.log('✅ Added user to map:', merged[loc.tourist_id]);
+
+      console.log('✅ Added user location to map:', merged[loc.tourist_id]);
     }
 
     const latestAlertPerTourist: Record<string, Alert> = {};
@@ -775,7 +848,7 @@ const AdminDashboard: React.FC = () => {
     }
 
     const result = Object.values(merged);
-    console.log('🗺️ Total users on map:', result.length);
+    console.log('🗺️ Total user locations on map:', result.length);
     return result;
   })();
 
@@ -792,7 +865,14 @@ const AdminDashboard: React.FC = () => {
     lat: zone.lat,
     lng: zone.lng,
     radius: zone.radius,
-    level: (zone.level as 'low' | 'medium' | 'high') || 'medium',
+    // Fix: normalize level — backend sends "High"/"Critical"/"Medium"/"Low"
+    // LeafletMap only accepts 'low' | 'medium' | 'high'
+    level: (() => {
+      const l = (zone.level || '').toLowerCase();
+      if (l === 'critical' || l === 'high') return 'high';
+      if (l === 'medium') return 'medium';
+      return 'low';
+    })() as 'low' | 'medium' | 'high',
   }));
 
   const getLevelColor = (level: string | null) => {
@@ -1047,18 +1127,74 @@ const AdminDashboard: React.FC = () => {
 
         {/* Live Map */}
         <div className="glass-card rounded-2xl p-6 mb-6">
-          <h2 className="font-display text-xl font-semibold mb-4 flex items-center gap-2">
-            <MapPin className="w-5 h-5 text-primary" />
-            Live User Tracking Map
-            <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-success/20 text-success flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              Live
-            </span>
-          </h2>
-          <div className="h-[400px] rounded-xl overflow-hidden">
-            <MapLibreMap
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-display text-xl font-semibold flex items-center gap-2">
+              <MapPin className="w-5 h-5 text-primary" />
+              Live User Tracking Map
+              <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-success/20 text-success flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
+                Live
+              </span>
+              <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-primary/10 text-primary">
+                {mapLocations.length} users
+              </span>
+            </h2>
+            <div className="flex items-center gap-2">
+              {/* User quick-focus buttons */}
+              <div className="flex items-center gap-1 overflow-x-auto max-w-xs">
+                {mapLocations.slice(0, 5).map(loc => {
+                  const statusColor = loc.status === 'danger' ? 'bg-red-500/20 border-red-500/50 text-red-400' :
+                    loc.status === 'alert' ? 'bg-yellow-500/20 border-yellow-500/50 text-yellow-400' :
+                    'bg-green-500/20 border-green-500/50 text-green-400';
+                  return (
+                    <button
+                      key={loc.touristId}
+                      onClick={() => setSelectedUserId(loc.touristId === selectedUserId ? null : loc.touristId)}
+                      className={`px-2 py-1 rounded-lg border text-xs font-semibold whitespace-nowrap transition-all ${
+                        selectedUserId === loc.touristId
+                          ? 'ring-2 ring-primary ' + statusColor
+                          : statusColor + ' opacity-70 hover:opacity-100'
+                      }`}
+                    >
+                      {loc.status === 'danger' ? '🚨' : loc.status === 'alert' ? '⚠️' : '✅'} {loc.username}
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Expand / Collapse map */}
+              <button
+                onClick={() => setMapHeight(h => h === 'normal' ? 'expanded' : 'normal')}
+                className="px-3 py-1.5 rounded-lg bg-muted/50 border border-border text-xs font-semibold hover:bg-muted transition-colors"
+              >
+                {mapHeight === 'normal' ? '⛶ Expand' : '⊡ Collapse'}
+              </button>
+            </div>
+          </div>
+
+          {/* Stats bar above map */}
+          <div className="grid grid-cols-3 gap-2 mb-3">
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-green-500/10 border border-green-500/20">
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-xs font-semibold text-green-400">{mapLocations.filter(l=>l.status==='safe').length} Safe</span>
+            </div>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
+              <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+              <span className="text-xs font-semibold text-yellow-400">{mapLocations.filter(l=>l.status==='alert').length} Alert</span>
+            </div>
+            <div className="flex items-center gap-2 p-2 rounded-lg bg-red-500/10 border border-red-500/20">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="text-xs font-semibold text-red-400">{mapLocations.filter(l=>l.status==='danger').length} Danger</span>
+            </div>
+          </div>
+
+          <div
+            className="rounded-xl overflow-hidden transition-all duration-300"
+            style={{ height: mapHeight === 'normal' ? '450px' : '700px' }}
+          >
+            <LeafletMap
               dangerZones={mapDangerZones}
               userLocations={mapLocations}
+              focusUserId={selectedUserId}
               showDangerZones={true}
               showUserMarkers={true}
               isAdmin={true}
@@ -1181,13 +1317,16 @@ const AdminDashboard: React.FC = () => {
                   // Get address from location (reverse geocoding cached in location object)
                   const displayAddress = userLocation?.address || `${userLocation?.lat.toFixed(4)}, ${userLocation?.lng.toFixed(4)}`;
 
-                  // Check if user is in any danger zone
+                  // Check if user is in any danger zone — correct Haversine
                   const isInDangerZone = dangerZones.some(zone => {
                     if (!userLocation) return false;
-                    const distance = Math.sqrt(
-                      Math.pow(userLocation.lat - zone.lat, 2) +
-                      Math.pow(userLocation.lng - zone.lng, 2)
-                    ) * 111000; // Convert to meters
+                    const R = 6371e3;
+                    const φ1 = userLocation.lat * Math.PI / 180;
+                    const φ2 = zone.lat * Math.PI / 180;
+                    const Δφ = (zone.lat - userLocation.lat) * Math.PI / 180;
+                    const Δλ = (zone.lng - userLocation.lng) * Math.PI / 180;
+                    const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+                    const distance = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
                     return distance <= zone.radius;
                   });
 
@@ -1215,6 +1354,18 @@ const AdminDashboard: React.FC = () => {
                                 <span className="truncate">{displayAddress}</span>
                               </p>
                             )}
+                            {userLocation?.updated_at && (
+                              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse inline-block" />
+                                {(() => {
+                                  const s = Math.floor((Date.now() - new Date(userLocation.updated_at + (userLocation.updated_at.endsWith('Z') ? '' : 'Z')).getTime()) / 1000);
+                                  if (s < 5) return 'Just now';
+                                  if (s < 60) return `${s}s ago`;
+                                  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+                                  return `${Math.floor(s/3600)}h ago`;
+                                })()}
+                              </p>
+                            )}
                             <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1">
                               <Clock className="w-3 h-3" />
                               Registered: {user.created_at && parseUTC(user.created_at).toLocaleDateString()}
@@ -1230,6 +1381,19 @@ const AdminDashboard: React.FC = () => {
                             {isInDangerZone ? '🚨 EMERGENCY' : `${sc.emoji} ${user.status?.toUpperCase() || 'SAFE'}`}
                           </span>
                           <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className={`gap-1 text-xs h-7 ${selectedUserId === user.tourist_id ? 'bg-primary/20 border-primary' : ''}`}
+                              onClick={() => {
+                                setSelectedUserId(user.tourist_id === selectedUserId ? null : user.tourist_id);
+                                // Scroll to map
+                                document.querySelector('.glass-card')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                              }}
+                            >
+                              <MapPin className="w-3 h-3" />
+                              {selectedUserId === user.tourist_id ? 'Unpin' : 'Focus'}
+                            </Button>
                             <Button
                               size="sm"
                               variant="outline"

@@ -88,7 +88,7 @@ const Login: React.FC = () => {
             });
           }
         }
-      }, 500);
+      }, 100);
     } catch (error) {
       toast({
         title: 'Connection Failed',
