@@ -1,18 +1,24 @@
 import React from 'react';
-import { ExternalLink, Download, Key, Shield, CheckCircle } from 'lucide-react';
+import { ExternalLink, Download, Key, Shield, CheckCircle, Smartphone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 const MetaMaskGuide: React.FC = () => {
+  const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  
   const steps = [
     {
-      icon: <ExternalLink className="w-6 h-6" />,
-      title: 'Visit MetaMask',
-      description: 'Go to metamask.io in your browser',
+      icon: isMobile ? <Smartphone className="w-6 h-6" /> : <ExternalLink className="w-6 h-6" />,
+      title: isMobile ? 'Download MetaMask App' : 'Visit MetaMask',
+      description: isMobile 
+        ? 'Install MetaMask from App Store (iOS) or Play Store (Android)' 
+        : 'Go to metamask.io in your browser',
     },
     {
       icon: <Download className="w-6 h-6" />,
-      title: 'Install Extension',
-      description: 'Download the browser extension or mobile app',
+      title: 'Install Wallet',
+      description: isMobile 
+        ? 'Download the MetaMask mobile app' 
+        : 'Download the browser extension or mobile app',
     },
     {
       icon: <Key className="w-6 h-6" />,
@@ -37,6 +43,14 @@ const MetaMaskGuide: React.FC = () => {
         How to Install <span className="gradient-text">MetaMask</span>
       </h3>
 
+      {isMobile && (
+        <div className="mb-6 p-4 rounded-xl bg-primary/10 border border-primary/30">
+          <p className="text-sm text-center font-semibold text-primary">
+            📱 You're on mobile - Download the MetaMask app
+          </p>
+        </div>
+      )}
+
       <div className="space-y-4">
         {steps.map((step, index) => (
           <div
@@ -57,14 +71,34 @@ const MetaMaskGuide: React.FC = () => {
         ))}
       </div>
 
-      <div className="mt-8 text-center">
-        <Button
-          className="btn-gradient px-8 py-3 rounded-xl"
-          onClick={() => window.open('https://metamask.io/download/', '_blank')}
-        >
-          <Download className="w-5 h-5 mr-2" />
-          Download MetaMask
-        </Button>
+      <div className="mt-8 space-y-3">
+        {isMobile ? (
+          <>
+            <Button
+              className="btn-gradient w-full py-4 rounded-xl"
+              onClick={() => window.open('https://apps.apple.com/app/metamask/id1438144202', '_blank')}
+            >
+              <Download className="w-5 h-5 mr-2" />
+              Download for iOS
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full py-4 rounded-xl"
+              onClick={() => window.open('https://play.google.com/store/apps/details?id=io.metamask', '_blank')}
+            >
+              <Download className="w-5 h-5 mr-2" />
+              Download for Android
+            </Button>
+          </>
+        ) : (
+          <Button
+            className="btn-gradient px-8 py-3 rounded-xl w-full"
+            onClick={() => window.open('https://metamask.io/download/', '_blank')}
+          >
+            <Download className="w-5 h-5 mr-2" />
+            Download MetaMask
+          </Button>
+        )}
       </div>
     </div>
   );

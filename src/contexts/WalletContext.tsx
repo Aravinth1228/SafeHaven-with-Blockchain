@@ -120,6 +120,16 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
 
   const connectWallet = async () => {
     if (!window.ethereum) {
+      // Check if on mobile - try to open MetaMask mobile app
+      const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      
+      if (isMobile) {
+        // Try to open MetaMask mobile app using deep link
+        const metamaskDeepLink = `https://metamask.app.link/dapp/${window.location.hostname}`;
+        window.location.href = metamaskDeepLink;
+        throw new Error('Opening MetaMask mobile app...');
+      }
+      
       throw new Error('MetaMask is not installed. Please install it at https://metamask.io');
     }
 
@@ -133,16 +143,16 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
       if (accounts.length > 0) {
         const address = accounts[0];
         console.log('✅ Wallet connected:', address);
-        
+
         setWalletAddress(address);
         localStorage.setItem('walletAddress', address);
-        
+
         // Create provider and signer
         const prov = new ethers.BrowserProvider(window.ethereum);
         const sgnr = await prov.getSigner();
         setSigner(sgnr);
         setProvider(prov);
-        
+
         console.log('✅ Provider and signer ready');
       }
     } catch (error: any) {
