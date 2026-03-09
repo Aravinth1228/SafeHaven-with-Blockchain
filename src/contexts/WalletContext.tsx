@@ -146,22 +146,43 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
   const connectWallet = async () => {
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     const currentHost = window.location.hostname;
+    const currentProtocol = window.location.protocol;
     
-    // Encode the current URL for redirect back after wallet connection
-    const encodedUrl = encodeURIComponent(`https://${currentHost}`);
+    // Build full URL for MetaMask to redirect back to (must be HTTPS for production)
+    const fullUrl = `${currentProtocol}//${currentHost}`;
 
     if (!window.ethereum) {
-      // MetaMask not installed - redirect to mobile app or download page
+      // MetaMask not installed - redirect to mobile app
       if (isMobile) {
-        // MetaMask mobile deep link with universal links
-        const metamaskDeepLink = `https://metamask.app.link/dapp/${currentHost}`;
+        console.log('📱 Mobile detected, opening MetaMask...');
         
-        // Try to open MetaMask app
-        window.location.href = metamaskDeepLink;
+        // Method 1: MetaMask universal link (recommended by MetaMask)
+        // This works on both iOS and Android
+        const universalLink = `https://metamask.app.link/dapp/${currentHost}`;
         
-        // Fallback: If MetaMask app not installed, redirect to download
+        // Method 2: Custom URL scheme (direct app open)
+        const customScheme = `metamask://`;
+        
+        console.log('🔗 Opening MetaMask with universal link:', universalLink);
+        
+        // Open in new tab/window - this allows the redirect to work better
+        const newWindow = window.open(universalLink, '_blank');
+        
+        // Fallback: If new window didn't work, try current window
+        if (!newWindow || newWindow.closed || typeof newWindow === 'undefined') {
+          window.location.href = universalLink;
+        }
+        
+        // Try custom scheme as backup after 500ms
         setTimeout(() => {
-          window.location.href = 'https://metamask.app.link/download';
+          console.log('🔄 Trying custom scheme');
+          window.location.href = customScheme;
+        }, 500);
+        
+        // Final fallback to download after 2 seconds
+        setTimeout(() => {
+          console.log('⚠️ Opening download page as fallback');
+          window.location.href = 'https://metamask.io/download/';
         }, 2000);
         
         throw new Error('Opening MetaMask mobile app...');
@@ -195,11 +216,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
     } catch (error: any) {
       console.error('❌ Connection failed:', error);
       
-      // If user rejected on mobile, try deep link again
-      if (isMobile && error.code === 4001) {
-        const metamaskDeepLink = `https://metamask.app.link/dapp/${currentHost}`;
-        window.location.href = metamaskDeepLink;
-        throw new Error('Please approve the connection in MetaMask');
+      // If error on mobile, try deep link again
+      if (isMobile) {
+        const universalLink = `https://metamask.app.link/dapp/${currentHost}`;
+        console.log('🔄 Retrying with MetaMask deep link...');
+        window.open(universalLink, '_blank');
+        throw new Error('Opening MetaMask app. Please approve the connection...');
       }
       
       throw new Error(error.message || 'Failed to connect wallet');
