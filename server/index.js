@@ -13,10 +13,37 @@ const server = http.createServer(app); // Create HTTP server
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/safehaven';
 
+// Allowed origins for CORS (add your production URLs)
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:3000',
+  'https://safehaven-with-blockchain-1.onrender.com', // Frontend on Render
+  process.env.FRONTEND_URL // Custom frontend URL from env
+].filter(Boolean);
+
+console.log('🔐 Allowed CORS origins:', ALLOWED_ORIGINS);
+
+// CORS Setup - Allow frontend to access API
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (ALLOWED_ORIGINS.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('❌ Blocked CORS origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
+
 // Socket.IO Setup - Real-time location tracking
 const io = new Server(server, {
   cors: {
-    origin: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'],
+    origin: ALLOWED_ORIGINS,
     methods: ['GET', 'POST'],
     credentials: true
   },
@@ -121,8 +148,7 @@ io.on('connection', (socket) => {
 // Export io for use in routes
 module.exports.io = io;
 
-// Middleware
-app.use(cors());
+// Middleware (CORS already configured above)
 app.use(express.json());
 
 // MongoDB Connection
@@ -171,9 +197,34 @@ function generateTouristId() {
 
 // API Routes
 
-// Health check
+// Root endpoint - for testing
+app.get('/', (req, res) => {
+  res.json({
+    name: 'SafeHaven API',
+    version: '1.0.0',
+    status: 'Running',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/api/health',
+      users: '/api/users',
+      locations: '/api/locations',
+      alerts: '/api/alerts',
+      dangerZones: '/api/danger-zones',
+      blockchain: '/api/blockchain'
+    }
+  });
+});
+
+// Health check - works without MongoDB
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date() });
+  const mongoStatus = mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected';
+  res.json({
+    status: 'OK',
+    timestamp: new Date(),
+    mongodb: mongoStatus,
+    blockchain: relayer.isInitialized() ? 'Ready' : 'Not initialized',
+    uptime: process.uptime().toFixed(2) + 's'
+  });
 });
 
 // Get all users
