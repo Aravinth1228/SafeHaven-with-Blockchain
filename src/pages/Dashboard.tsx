@@ -273,7 +273,8 @@ const Dashboard: React.FC = () => {
     let watchId: number | null = null;
 
     // Accuracy threshold — reject anything worse than this
-    const MAX_ACCEPTABLE_ACCURACY = 500; // meters
+    // Desktop/WiFi: ~1-5km | Urban GPS: 10-50m | Open sky GPS: 3-10m
+    const MAX_ACCEPTABLE_ACCURACY = 5000; // 5km — allow WiFi location for desktop users
 
     const applyReading = (lat: number, lng: number, accuracy: number) => {
       setLocation({ lat, lng });
@@ -287,8 +288,9 @@ const Dashboard: React.FC = () => {
         toast({ title: '📍 Location Active', description: `±${Math.round(accuracy)}m — Go outdoors for better accuracy.`, duration: 6000 });
       } else if (accuracy <= 500) {
         toast({ title: '⚠️ Weak GPS Signal', description: `±${Math.round(accuracy)}m — Move to open area.`, duration: 8000 });
+      } else if (accuracy <= 5000) {
+        toast({ title: '📶 WiFi Location', description: `±${Math.round(accuracy / 1000)}km — Using network location (desktop/indoor)`, duration: 8000 });
       }
-      // >500m: we never reach here — rejected before calling this
     };
 
     const applyBestReading = (positions: GeolocationPosition[]) => {
